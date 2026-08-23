@@ -1,0 +1,24 @@
+{
+  "name": "@editable-pixel/integration-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --exclude 'e2e/**'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@editable-pixel/converter": "workspace:*",
+    "@editable-pixel/core": "workspace:*",
+    "@editable-pixel/document": "workspace:*",
+    "@editable-pixel/renderer": "workspace:*",
+    "@editable-pixel/server": "workspace:*",
+    "sharp": "0.35.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>In the active session whose document name is evaluation.pixel.json, compare the logical canvas area with the actual occupied content-bounds area. What is their difference in pixels? Answer with one integer.</question>
+    <answer>32</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Find the evaluation.pixel.json session, inspect all frame durations, and calculate the complete animation loop duration. Answer with one integer in milliseconds.</question>
+    <answer>600</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>For evaluation.pixel.json, determine which non-artwork layer is targeted by the live browser selection. Answer with the exact human-readable layer name.</question>
+    <answer>AI Highlights</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Inspect the selected rectangle in evaluation.pixel.json and the document canvas. How many times could that rectangle tile the canvas without overlap? Answer with one integer.</question>
+    <answer>12</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>The evaluation fixture has a content box and actual occupied bounds. What percentage of the content-box area is occupied by the bounds? Round to the nearest whole percent and answer with the integer only.</question>
+    <answer>53</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Look at all named regions in evaluation.pixel.json. Which region has the larger area? Answer with its exact region name.</question>
+    <answer>Face</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>For evaluation.pixel.json, count only layers that are visible and have opacity greater than or equal to 0.75. Answer with one integer.</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Inspect the evaluation document's alignment, pivot, and canvas height. Is the pivot located on the bottom row as required by its alignment? Answer True or False.</question>
+    <answer>True</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>For evaluation.pixel.json, subtract the transparent palette entry from the total number of palette entries. How many drawable colors remain? Answer with one integer.</question>
+    <answer>4</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Find evaluation.pixel.json through the session list, compare its current revision with its number of frames, and subtract the latter from the former. Answer with one integer.</question>
+    <answer>4</answer>
+  </qa_pair>
+</evaluation>

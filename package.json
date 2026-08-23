@@ -1,0 +1,31 @@
+{
+  "name": "editable-pixel-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm --filter @editable-pixel/web dev",
+    "lint": "eslint .",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "playwright test",
+    "test:distribution": "node tests/distribution/package-install.mjs",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "verify": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.10.4",
+    "eslint": "9.39.5",
+    "globals": "17.11.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0",
+    "vite": "6.4.3",
+    "vitest": "3.2.7"
+  }
+}

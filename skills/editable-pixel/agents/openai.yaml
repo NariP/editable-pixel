@@ -1,0 +1,4 @@
+interface:
+  display_name: "Editable Pixel"
+  short_description: "Edit AI pixel assets with browser review"
+  default_prompt: "Use $editable-pixel to open this AI-generated pixel asset, let me select an area, and preview a safe edit."

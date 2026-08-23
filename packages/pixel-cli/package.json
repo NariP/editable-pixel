@@ -1,0 +1,37 @@
+{
+  "name": "editable-pixel",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "editable-pixel": "./dist/cli.js",
+    "editable-pixel-server": "./dist/server-runner.js",
+    "editable-pixel-mcp": "./dist/mcp.js"
+  },
+  "main": "./dist/cli.js",
+  "files": ["dist", "web", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts && node scripts/prepare-package.mjs",
+    "prepack": "pnpm build",
+    "postpack": "node scripts/prepare-package.mjs --clean",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "busboy": "1.6.0",
+    "commander": "15.0.0",
+    "open": "11.0.1",
+    "sharp": "0.35.3",
+    "ws": "8.21.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@editable-pixel/converter": "workspace:*",
+    "@editable-pixel/core": "workspace:*",
+    "@editable-pixel/document": "workspace:*",
+    "@editable-pixel/mcp": "workspace:*",
+    "@editable-pixel/renderer": "workspace:*",
+    "@editable-pixel/server": "workspace:*",
+    "tsup": "8.5.1"
+  }
+}
