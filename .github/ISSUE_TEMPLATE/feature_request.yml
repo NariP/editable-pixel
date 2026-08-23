@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose an improvement for the AI-generated pixel asset workflow.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the AI-generated asset workflow that is difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Explain the result without prescribing a broad general-purpose editor feature.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Primary area
+      options:
+        - Conversion and normalization
+        - Selection-bounded agent editing
+        - Pixel Document compatibility
+        - Rendering and export
+        - Host integration
+        - Developer experience
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example assets or workflow
+      description: Use public or sanitized examples only.

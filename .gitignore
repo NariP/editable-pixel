@@ -1,0 +1,23 @@
+# Local AI agent configuration
+.claude/
+.agents/
+.codex/
+
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tgz
+
+# Test artifacts
+playwright-report/
+test-results/
+artifacts/
+packages/pixel-cli/web/
+packages/pixel-cli/README.md
+packages/pixel-cli/README.ko.md
+packages/pixel-cli/LICENSE
+
+# Local files
+.DS_Store
+*.log

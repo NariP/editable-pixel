@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Check tag and package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./packages/pixel-cli/package.json').version")"
+          test "$TAG_VERSION" = "$PACKAGE_VERSION"
+      - run: pnpm verify
+      - run: pnpm test:e2e
+      - run: pnpm test:distribution
+      - name: Build release assets
+        run: |
+          mkdir release-artifacts
+          pnpm --filter editable-pixel pack --pack-destination "$GITHUB_WORKSPACE/release-artifacts"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          tar -czf "release-artifacts/editable-pixel-skill-${TAG_VERSION}.tar.gz" -C skills editable-pixel
+          cd release-artifacts
+          shasum -a 256 editable-pixel-*.tgz editable-pixel-skill-*.tar.gz > SHA256SUMS
+      - name: Publish npm package
+        run: npm publish "release-artifacts/editable-pixel-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" release-artifacts/* \
+            --verify-tag \
+            --title "Editable Pixel ${TAG_VERSION}" \
+            --generate-notes \
+            --notes "Compatibility: Pixel Document v1. Includes CLI, local web editor, MCP executable, and agent skill archive. Verify downloaded assets with SHA256SUMS."
+        env:
+          GH_TOKEN: ${{ github.token }}

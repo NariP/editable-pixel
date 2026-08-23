@@ -1,0 +1,29 @@
+{
+  "name": "@editable-pixel/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./client": { "types": "./dist/client.d.ts", "default": "./dist/client.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@editable-pixel/converter": "workspace:*",
+    "@editable-pixel/core": "workspace:*",
+    "@editable-pixel/document": "workspace:*",
+    "@editable-pixel/renderer": "workspace:*",
+    "busboy": "1.6.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/busboy": "1.5.4",
+    "@types/ws": "8.18.1"
+  }
+}
