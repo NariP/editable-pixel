@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createPixelDocument, serializePixelDocument } from "@editable-pixel/document";
+import { parsePixelProject } from "@editable-pixel/project";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -97,6 +98,26 @@ describe("editable-pixel CLI", () => {
     expect(output.join("\n")).toContain("--width 24 --height 32");
   });
 
+  it("installs the bundled Codex or Claude skill without overwriting by default", async () => {
+    const directory = await temporaryDirectory();
+    const output: string[] = [];
+    const first = await runCli([
+      "node", "editable-pixel", "--json", "install-skill",
+      "--host", "codex", "--target", directory
+    ], context(output, []));
+    const installed = JSON.parse(output[0]!) as { outputs: string[] };
+
+    expect(first).toBe(0);
+    await expect(access(join(installed.outputs[0]!, "SKILL.md"))).resolves.toBeUndefined();
+    const errors: string[] = [];
+    const second = await runCli([
+      "node", "editable-pixel", "install-skill",
+      "--host", "codex", "--target", directory
+    ], context([], errors));
+    expect(second).toBe(1);
+    expect(errors.at(-1)).toContain("SKILL_EXISTS");
+  });
+
   it("preflights an export bundle before writing any generated file", async () => {
     const directory = await temporaryDirectory();
     const documentPath = join(directory, "hero.pixel.json");
@@ -127,6 +148,44 @@ describe("editable-pixel CLI", () => {
 
     expect(code).toBe(1);
     expect(errors.at(-1)).toContain("INPUT_FORMAT_UNSUPPORTED");
+  });
+
+  it("creates and validates a Project, replaces and exports its canvas, and renders its Lit frame", async () => {
+    const directory = await temporaryDirectory();
+    const projectPath = join(directory, "robot.pixel-project.json");
+    const documentPath = join(directory, "jump.pixel.json");
+    const importedPath = join(directory, "robot-with-jump.pixel-project.json");
+    const exportedPath = join(directory, "jump-export.pixel.json");
+    const renderedPath = join(directory, "jump-lit.png");
+    await writeFile(documentPath, serializePixelDocument(createPixelDocument({ width: 2, height: 2, pixels: [0, 1, 1, 0] })));
+
+    expect(await runCli([
+      "node", "editable-pixel", "project", "create", "Robot", "--size", "2", "--output", projectPath
+    ], context([], []))).toBe(0);
+    expect(await runCli([
+      "node", "editable-pixel", "project", "import-document", projectPath, documentPath,
+      "--output", importedPath
+    ], context([], []))).toBe(0);
+    const imported = parsePixelProject(await readFile(importedPath, "utf8"));
+    expect(imported.document.canvas).toEqual({ width: 2, height: 2 });
+
+    expect(await runCli([
+      "node", "editable-pixel", "project", "export-document", importedPath,
+      "--output", exportedPath
+    ], context([], []))).toBe(0);
+    expect(JSON.parse(await readFile(exportedPath, "utf8"))).toMatchObject({ format: "pixel-document" });
+
+    expect(await runCli([
+      "node", "editable-pixel", "render", importedPath,
+      "--format", "lit", "--scale", "2", "--output", renderedPath
+    ], context([], []))).toBe(0);
+    await expect(access(renderedPath)).resolves.toBeUndefined();
+
+    const validationOutput: string[] = [];
+    expect(await runCli([
+      "node", "editable-pixel", "--json", "validate", importedPath
+    ], context(validationOutput, []))).toBe(0);
+    expect(JSON.parse(validationOutput[0]!)).toMatchObject({ valid: true, format: "pixel-project" });
   });
 });
 

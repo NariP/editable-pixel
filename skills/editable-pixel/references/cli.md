@@ -3,6 +3,7 @@
 Every command supports global `--json` before the subcommand. Failures return a non-zero status and a stable `{ "error": { "code", "message" } }` object on stderr.
 
 ```text
+editable-pixel install-skill [--host codex|claude|both] [--target DIR] [--force] [--no-register-mcp]
 editable-pixel convert <input...> [--size N] [--width N] [--height N] [--colors N] [--palette COLORS] [--alignment center|bottom-center] [--content-scale N] [--dithering none|floyd-steinberg] [--background alpha|solid|local-removal] [--output PATH]
 editable-pixel open <document> [--host browser|codex|claude] [--output-directory DIR]
 editable-pixel validate <document>
@@ -18,6 +19,8 @@ editable-pixel patch reject --session <session-id> --patch <patch-id>
 editable-pixel undo --session <session-id>
 editable-pixel redo --session <session-id>
 ```
+
+The MCP Skill normally uses immediate `set_selection` and `use_editable_pixel` calls. The `patch preview/apply/reject` CLI commands are retained for compatibility and explicit review workflows.
 
 Conversion and export refuse existing output files. Choose a fresh file or directory; do not delete or overwrite an existing target unless the user explicitly requests that separate action.
 

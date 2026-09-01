@@ -1,11 +1,19 @@
 import {
+  fillNormal,
   erasePixel,
   fill,
+  resetNormalPixel,
   setPixel,
+  setNormalPixel,
   type Patch
 } from "@editable-pixel/core";
 import type { PixelDocument, Selection } from "@editable-pixel/document";
-import { renderRgba } from "@editable-pixel/renderer";
+import {
+  renderLitRgba,
+  renderNormalRgba,
+  renderRgba,
+  type LightSettings
+} from "@editable-pixel/renderer";
 import {
   useEffect,
   useRef,
@@ -14,11 +22,14 @@ import {
 } from "react";
 
 export type Tool = "pen" | "eraser" | "fill" | "select";
+export type EditMapMode = "color" | "normal";
+export type NormalPreviewMode = "map" | "lit";
 
 export interface OnionSkinSettings {
   previous: number;
   next: number;
   opacity: number;
+  frameIds?: string[];
 }
 
 interface PixelCanvasProps {
@@ -27,6 +38,11 @@ interface PixelCanvasProps {
   frameId: string;
   tool: Tool;
   colorIndex: number;
+  editMap: EditMapMode;
+  normalValue: number;
+  normalPreview: NormalPreviewMode;
+  light: LightSettings;
+  showLightMarker: boolean;
   zoom: number;
   showGrid: boolean;
   onionSkin: OnionSkinSettings;
@@ -43,6 +59,8 @@ interface PixelCanvasProps {
   onEdit: (operation: (document: PixelDocument) => Patch) => void;
   onSelection: (selection: Selection | undefined) => void;
   onPickColor: (color: string) => void;
+  onLightPosition: (x: number, y: number) => void;
+  onLightCommit: (x: number, y: number) => void;
 }
 
 interface Point { x: number; y: number }
@@ -57,9 +75,14 @@ export function renderOnionSkinRgba(
   settings: OnionSkinSettings
 ): Uint8ClampedArray {
   const pixels = new Uint8ClampedArray(document.canvas.width * document.canvas.height * 4);
-  if (document.frames.length < 2 || (settings.previous <= 0 && settings.next <= 0)) return pixels;
+  const frames = settings.frameIds
+    ? settings.frameIds
+      .map((candidateId) => document.frames.find((frame) => frame.id === candidateId))
+      .filter((frame): frame is PixelDocument["frames"][number] => Boolean(frame))
+    : document.frames;
+  if (frames.length < 2 || (settings.previous <= 0 && settings.next <= 0)) return pixels;
 
-  const activeIndex = document.frames.findIndex((frame) => frame.id === frameId);
+  const activeIndex = frames.findIndex((frame) => frame.id === frameId);
   if (activeIndex < 0) return pixels;
 
   const baseOpacity = Math.min(1, Math.max(0, settings.opacity));
@@ -72,7 +95,7 @@ export function renderOnionSkinRgba(
     tint: [number, number, number]
   ) => {
     for (let distance = count; distance >= 1; distance -= 1) {
-      const frame = document.frames[activeIndex + direction * distance];
+      const frame = frames[activeIndex + direction * distance];
       if (!frame) continue;
       const distanceOpacity = baseOpacity * Math.max(0.35, 1 - (distance - 1) * 0.25);
       compositeRgba(pixels, renderRgba(document, { frameId: frame.id }).data, distanceOpacity, tint);
@@ -113,6 +136,11 @@ export function PixelCanvas({
   frameId,
   tool,
   colorIndex,
+  editMap,
+  normalValue,
+  normalPreview,
+  light,
+  showLightMarker,
   zoom,
   showGrid,
   onionSkin,
@@ -128,7 +156,9 @@ export function PixelCanvas({
   onActivate,
   onEdit,
   onSelection,
-  onPickColor
+  onPickColor,
+  onLightPosition,
+  onLightCommit
 }: PixelCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selectionMaskCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -147,6 +177,8 @@ export function PixelCanvas({
   const [zoomAreaCursor, setZoomAreaCursor] = useState(false);
   const [comparePosition, setComparePosition] = useState(50);
   const [compareDragging, setCompareDragging] = useState(false);
+  const lightDraggingRef = useRef(false);
+  const lightPositionRef = useRef({ x: light.x, y: light.y });
   const selection = dragSelection
     ? additiveSelection.current
       ? addOrToggleSelection(document.selection, dragSelection, document.canvas.width)
@@ -157,15 +189,21 @@ export function PixelCanvas({
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const rendered = renderRgba(document, { frameId });
+    const rendered = editMap === "normal"
+      ? normalPreview === "lit"
+        ? renderLitRgba(document, light, { frameId })
+        : renderNormalRgba(document, { frameId })
+      : renderRgba(document, { frameId });
     canvas.width = rendered.width;
     canvas.height = rendered.height;
-    const pixels = renderOnionSkinRgba(document, frameId, onionSkin);
+    const pixels = editMap === "color"
+      ? renderOnionSkinRgba(document, frameId, onionSkin)
+      : new Uint8ClampedArray(rendered.data.length);
     compositeRgba(pixels, rendered.data);
     const imagePixels = new Uint8ClampedArray(pixels.length);
     imagePixels.set(pixels);
     canvas.getContext("2d")!.putImageData(new ImageData(imagePixels, rendered.width, rendered.height), 0, 0);
-  }, [document, frameId, onionSkin]);
+  }, [document, editMap, frameId, light, normalPreview, onionSkin]);
 
   useEffect(() => {
     const canvas = selectionMaskCanvasRef.current;
@@ -178,15 +216,12 @@ export function PixelCanvas({
     for (let index = 0; index < width * height; index += 1) {
       const offset = index * 4;
       if (selected.has(index)) {
-        pixels[offset] = 184;
-        pixels[offset + 1] = 255;
-        pixels[offset + 2] = 61;
-        pixels[offset + 3] = 48;
+        pixels[offset + 3] = 0;
       } else {
         pixels[offset] = 8;
         pixels[offset + 1] = 10;
         pixels[offset + 2] = 8;
-        pixels[offset + 3] = 72;
+        pixels[offset + 3] = 56;
       }
     }
     canvas.getContext("2d")!.putImageData(new ImageData(pixels, width, height), 0, 0);
@@ -309,9 +344,49 @@ export function PixelCanvas({
   };
 
   const editPoint = (point: Point) => {
+    if (editMap === "normal") {
+      if (tool === "pen") onEdit((current) => setNormalPixel(current, layerId, frameId, point.x, point.y, normalValue, current.selection));
+      if (tool === "eraser") onEdit((current) => resetNormalPixel(current, layerId, frameId, point.x, point.y, current.selection));
+      if (tool === "fill") onEdit((current) => fillNormal(current, layerId, frameId, point.x, point.y, normalValue, current.selection));
+      return;
+    }
     if (tool === "pen") onEdit((current) => setPixel(current, layerId, frameId, point.x, point.y, colorIndex, current.selection));
     if (tool === "eraser") onEdit((current) => erasePixel(current, layerId, frameId, point.x, point.y, current.selection));
     if (tool === "fill") onEdit((current) => fill(current, layerId, frameId, point.x, point.y, colorIndex, current.selection));
+  };
+
+  const updateLightPosition = (clientX: number, clientY: number): Point | undefined => {
+    const rect = shellRef.current?.getBoundingClientRect();
+    if (!rect) return undefined;
+    const point = {
+      x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
+    };
+    lightPositionRef.current = point;
+    onLightPosition(point.x, point.y);
+    return point;
+  };
+
+  const onLightPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    lightDraggingRef.current = true;
+    updateLightPosition(event.clientX, event.clientY);
+  };
+
+  const onLightPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!lightDraggingRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateLightPosition(event.clientX, event.clientY);
+  };
+
+  const onLightPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    lightDraggingRef.current = false;
+    onLightCommit(lightPositionRef.current.x, lightPositionRef.current.y);
   };
 
   const pickColor = (point: Point) => {
@@ -393,6 +468,10 @@ export function PixelCanvas({
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (lightDraggingRef.current) {
+      updateLightPosition(event.clientX, event.clientY);
+      return;
+    }
     if (panStart) {
       const viewport = viewportRef.current!;
       viewport.scrollLeft = panStart.left - (event.clientX - panStart.point.x);
@@ -430,6 +509,10 @@ export function PixelCanvas({
   };
 
   const onPointerUp = () => {
+    if (lightDraggingRef.current) {
+      lightDraggingRef.current = false;
+      return;
+    }
     if (panStart) {
       setPanStart(undefined);
       setNavigationCursor(spacePressed.current);
@@ -467,6 +550,7 @@ export function PixelCanvas({
   };
 
   const onPointerCancel = () => {
+    lightDraggingRef.current = false;
     setPanStart(undefined);
     setStart(undefined);
     setDragSelection(undefined);
@@ -481,7 +565,7 @@ export function PixelCanvas({
       <div className="canvas-stage" style={{ minWidth: document.canvas.width * zoom + 96, minHeight: document.canvas.height * zoom + 128 }}>
         <div
           ref={shellRef}
-          className={`pixel-canvas-shell tool-${tool}${keyboardTarget ? " keyboard-target" : ""}${navigationCursor ? " navigation-cursor" : ""}${zoomAreaCursor ? " zoom-area-cursor" : ""}${compareMode ? " compare-mode" : ""}${colorPickMode ? " color-pick-cursor" : ""}`}
+          className={`pixel-canvas-shell tool-${tool} map-${editMap}${keyboardTarget ? " keyboard-target" : ""}${navigationCursor ? " navigation-cursor" : ""}${zoomAreaCursor ? " zoom-area-cursor" : ""}${compareMode ? " compare-mode" : ""}${colorPickMode ? " color-pick-cursor" : ""}`}
           style={{
             width: document.canvas.width * zoom,
             height: document.canvas.height * zoom,
@@ -513,6 +597,19 @@ export function PixelCanvas({
                 }}
               />
             </div>
+          )}
+          {editMap === "normal" && normalPreview === "lit" && showLightMarker && (
+            <button
+              type="button"
+              className="normal-light-handle"
+              aria-label="Move light"
+              title="Drag light"
+              style={{ left: `${light.x * 100}%`, top: `${light.y * 100}%` }}
+              onPointerDown={onLightPointerDown}
+              onPointerMove={onLightPointerMove}
+              onPointerUp={onLightPointerUp}
+              onPointerCancel={onLightPointerUp}
+            ><span /></button>
           )}
           <div
             className="content-frame-guide"

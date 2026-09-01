@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,12 +9,23 @@ import { convertBatch, type ConvertOptions } from "@editable-pixel/converter";
 import type { Patch } from "@editable-pixel/core";
 import {
   parsePixelDocument,
+  resolveFrameLighting,
   serializePixelDocument,
   validatePixelDocument,
   type PixelDocument
 } from "@editable-pixel/document";
 import {
+  commitPixelProject,
+  createPixelProject,
+  parsePixelProject,
+  serializePixelProject,
+  validatePixelProject,
+  type PixelProject
+} from "@editable-pixel/project";
+import {
   renderLayerPng,
+  renderLitPreviewPng,
+  renderNormalPreviewPng,
   renderPng,
   renderPreviewPng,
   renderSpriteSheet
@@ -50,10 +62,50 @@ export function createProgram(context: CliContext = defaultContext): Command {
     .addHelpText("after", `
 Examples:
   editable-pixel convert hero.png --size 32 --colors 16
+  editable-pixel install-skill --host both
   editable-pixel open hero.pixel.json
   editable-pixel selection get --session <session-id> --json
   editable-pixel patch preview --session <session-id> --patch change.json
   editable-pixel patch apply --session <session-id> --patch change.json`);
+
+  program.command("install-skill")
+    .description("Install the bundled Editable Pixel skill for Codex, Claude, or both hosts.")
+    .option("--host <host>", "codex, claude, or both", "both")
+    .option("--target <directory>", "custom skill root for testing or managed environments")
+    .option("--force", "replace an existing Editable Pixel skill")
+    .option("--no-register-mcp", "copy the Skill without registering the MCP server")
+    .action(async (flags: { host: string; target?: string; force?: boolean; registerMcp: boolean }) => {
+      const host = enumValue(flags.host, ["codex", "claude", "both"] as const, "host");
+      const source = await bundledSkillDirectory();
+      const roots = flags.target
+        ? [resolve(flags.target)]
+        : host === "both"
+          ? [join(homedir(), ".codex", "skills"), join(homedir(), ".claude", "skills")]
+          : [join(homedir(), host === "codex" ? ".codex" : ".claude", "skills")];
+      const outputs: string[] = [];
+      for (const root of roots) {
+        const output = join(root, "editable-pixel");
+        await mkdir(root, { recursive: true });
+        if (!flags.force && await exists(output)) {
+          throw new CliError("SKILL_EXISTS", "Skill already exists at " + output + ". Use --force to replace it.");
+        }
+        if (flags.force && await exists(output)) await rm(output, { recursive: true, force: true });
+        await cp(source, output, { recursive: true, force: Boolean(flags.force) });
+        outputs.push(output);
+      }
+      const registrations = flags.target || !flags.registerMcp
+        ? []
+        : await registerMcpHosts(host, Boolean(flags.force));
+      print(
+        program,
+        context,
+        { host, outputs, registrations },
+        "Installed Editable Pixel skill:\n" + outputs.map((output) => "- " + output).join("\n")
+          + (registrations.length
+            ? "\nRegistered Editable Pixel MCP:\n" + registrations.map((registration) => `- ${registration.host}: ${registration.status}`).join("\n")
+            : "")
+      );
+    });
 
   program.command("convert")
     .description("Convert one or more PNG, WebP, or JPEG files into Pixel Documents.")
@@ -112,21 +164,26 @@ Example:
     });
 
   program.command("open")
-    .description("Open a Pixel Document in the local web editor and create an agent session.")
-    .argument("<document>", "Pixel Document path")
+    .description("Open the local web editor with a blank canvas or an existing Pixel Project or Pixel Document.")
+    .argument("[document]", "optional Pixel Project or Pixel Document path")
     .option("--output-directory <path>", "allowed export directory")
     .option("--host <host>", "browser, codex, or claude", "browser")
     .option("--no-browser", "create the session without launching the browser")
     .addHelpText("after", `
 Example:
+  editable-pixel open
   editable-pixel open hero.pixel.json --host codex --json`)
-    .action(async (documentPath: string, flags: { outputDirectory?: string; host: string; browser: boolean }) => {
-      parsePixelDocument(await readFile(documentPath, "utf8"));
+    .action(async (documentPath: string | undefined, flags: { outputDirectory?: string; host: string; browser: boolean }) => {
+      const editable = documentPath ? await loadEditableFile(documentPath) : undefined;
       const host = enumValue(flags.host, ["browser", "codex", "claude"] as const, "host");
       const client = await ensureServer();
       const created = await client.createSession({
-        documentPath: resolve(documentPath),
-        outputDirectory: resolve(flags.outputDirectory ?? dirname(documentPath)),
+        ...(documentPath && editable
+          ? editable.kind === "project"
+            ? { projectPath: resolve(documentPath) }
+            : { documentPath: resolve(documentPath) }
+          : {}),
+        outputDirectory: resolve(flags.outputDirectory ?? (documentPath ? dirname(documentPath) : process.cwd())),
         host
       });
       const launchUrl = client.browserUrl(created.session.id, created.bootstrapToken);
@@ -137,6 +194,7 @@ Example:
           sessionId: created.session.id,
           url: safeUrl,
           revision: created.session.revision,
+          ...(created.session.projectContext ? { projectContext: created.session.projectContext } : {}),
           ...(host === "codex" ? { launchUrl } : {})
         },
         `Opened ${created.session.documentName}\nSession: ${created.session.id}\nEditor: ${host === "codex" ? `${launchUrl}\nThis one-time URL must not be saved or logged.` : safeUrl}`
@@ -144,16 +202,17 @@ Example:
     });
 
   program.command("validate")
-    .description("Validate schema, references, palette indices, and canvas invariants.")
-    .argument("<document>", "Pixel Document path")
+    .description("Validate a Pixel Project or Pixel Document, including references, palette indices, and canvas invariants.")
+    .argument("<document>", "Pixel Project or Pixel Document path")
     .addHelpText("after", `
 Example:
   editable-pixel validate hero.pixel.json --json`)
     .action(async (path: string) => {
       const input = JSON.parse(await readFile(path, "utf8")) as unknown;
-      const result = validatePixelDocument(input);
-      if (!result.valid) throw new CliError("DOCUMENT_INVALID", result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
-      print(program, context, result, `Valid Pixel Document: ${resolve(path)}`);
+      const isProject = isPixelProjectValue(input);
+      const result = isProject ? validatePixelProject(input) : validatePixelDocument(input);
+      if (!result.valid) throw new CliError(isProject ? "PROJECT_INVALID" : "DOCUMENT_INVALID", result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
+      print(program, context, { ...result, format: isProject ? "pixel-project" : "pixel-document" }, `Valid ${isProject ? "Pixel Project" : "Pixel Document"}: ${resolve(path)}`);
     });
 
   program.command("render")
@@ -163,18 +222,29 @@ Example:
     .option("--scale <factor>", "nearest-neighbor preview scale", "1")
     .option("--frame <id>", "frame ID")
     .option("--layer <id>", "layer ID")
+    .option("--format <format>", "color, normal, or lit", "color")
     .addHelpText("after", `
 Example:
   editable-pixel render hero.pixel.json --scale 8 --output hero@8x.png`)
-    .action(async (path: string, flags: { output?: string; scale: string; frame?: string; layer?: string }) => {
-      const document = await loadDocument(path);
+    .action(async (path: string, flags: { output?: string; scale: string; frame?: string; layer?: string; format: string }) => {
+      const document = await loadEditableDocument(path);
       const scale = integer(flags.scale, "scale", 1, 64);
+      const format = enumValue(flags.format, ["color", "normal", "lit"] as const, "format");
       const output = resolve(flags.output ?? `${parse(path).name}${scale > 1 ? `-${scale}x` : ""}.png`);
-      const png = flags.layer
-        ? await renderLayerPng(document, flags.layer, flags.frame)
-        : scale > 1
-          ? await renderPreviewPng(document, scale, { frameId: flags.frame })
-          : await renderPng(document, { frameId: flags.frame });
+      const frameId = flags.frame ?? document.frames[0]!.id;
+      const renderOptions = { frameId, ...(flags.layer ? { layerIds: [flags.layer] } : {}) };
+      const frame = document.frames.find((candidate) => candidate.id === frameId);
+      if (!frame) throw new CliError("FRAME_NOT_FOUND", `Frame not found: ${frameId}`);
+      const png = format === "normal"
+        ? await renderNormalPreviewPng(document, scale, renderOptions)
+        : format === "lit"
+          ? await renderLitPreviewPng(
+            document,
+            resolveFrameLighting(document, document.frames.map((candidate) => candidate.id), frame.id),
+            scale,
+            renderOptions
+          )
+          : await renderPreviewPng(document, scale, renderOptions);
       await writeExclusive(output, png);
       print(program, context, { output, width: document.canvas.width * scale, height: document.canvas.height * scale }, `Rendered ${output}`);
     });
@@ -187,7 +257,7 @@ Example:
 Example:
   editable-pixel export hero.pixel.json --output hero-export`)
     .action(async (path: string, flags: { output: string }) => {
-      const document = await loadDocument(path);
+      const document = await loadEditableDocument(path);
       const directory = resolve(flags.output);
       const names = [
         "document.pixel.json",
@@ -215,6 +285,52 @@ Example:
       await add("sprite-sheet.png", sheet.png);
       await add("sprite-sheet.json", JSON.stringify(sheet.metadata, null, 2));
       print(program, context, { directory, outputs }, `Exported ${outputs.length} files to ${directory}`);
+    });
+
+  const project = program.command("project").description("Create Pixel Projects and exchange their canvas as Pixel JSON.");
+  project.command("create")
+    .description("Create a new source-less Pixel Project.")
+    .argument("<name>", "Project name")
+    .requiredOption("--output <path>", "new .pixel-project.json path")
+    .option("--size <pixels>", "square logical canvas size", "64")
+    .action(async (name: string, flags: { output: string; size: string }) => {
+      const size = integer(flags.size, "size", 1, 4096);
+      const value = createPixelProject({ name, width: size, height: size });
+      const output = resolve(flags.output);
+      await writeExclusive(output, serializePixelProject(value));
+      print(program, context, { output, projectId: value.id }, `Created Project ${value.name}: ${output}`);
+    });
+  project.command("import-document")
+    .description("Replace a Project canvas from one Pixel Document and write a new Project file without overwriting the input.")
+    .argument("<project>", "input Pixel Project path")
+    .argument("<document>", "input Pixel Document path")
+    .requiredOption("--output <path>", "new Pixel Project output path")
+    .action(async (projectPath: string, documentPath: string, flags: { output: string }) => {
+      const current = parsePixelProject(await readFile(projectPath, "utf8"));
+      const document = parsePixelDocument(await readFile(documentPath, "utf8"));
+      const seed = createPixelProject({ document });
+      const next = commitPixelProject(current, (draft) => {
+        draft.document = seed.document;
+        draft.clips = seed.clips;
+        draft.active = {
+          clipId: seed.clips[0]!.id,
+          frameId: seed.document.frames[0]!.id,
+          layerId: seed.document.layers[0]!.id
+        };
+      });
+      const output = resolve(flags.output);
+      await writeExclusive(output, serializePixelProject(next));
+      print(program, context, { output, projectId: next.id }, `Replaced Project canvas from ${basename(documentPath)}: ${output}`);
+    });
+  project.command("export-document")
+    .description("Export the Project canvas as editable Pixel JSON.")
+    .argument("<project>", "input Pixel Project path")
+    .requiredOption("--output <path>", "new Pixel Document output path")
+    .action(async (projectPath: string, flags: { output: string }) => {
+      const value = parsePixelProject(await readFile(projectPath, "utf8"));
+      const output = resolve(flags.output);
+      await writeExclusive(output, serializePixelDocument(value.document));
+      print(program, context, { output, projectId: value.id }, `Exported Project canvas: ${output}`);
     });
 
   const session = program.command("session").description("Inspect and close local editor sessions.").addHelpText("after", `
@@ -372,8 +488,24 @@ async function ensureServer(): Promise<PixelServerClient> {
   }
 }
 
-async function loadDocument(path: string): Promise<PixelDocument> {
-  return parsePixelDocument(await readFile(path, "utf8"));
+type EditableFile =
+  | { kind: "document"; document: PixelDocument }
+  | { kind: "project"; project: PixelProject };
+
+async function loadEditableFile(path: string): Promise<EditableFile> {
+  const decoded = JSON.parse(await readFile(path, "utf8")) as unknown;
+  return isPixelProjectValue(decoded)
+    ? { kind: "project", project: parsePixelProject(decoded) }
+    : { kind: "document", document: parsePixelDocument(decoded) };
+}
+
+async function loadEditableDocument(path: string): Promise<PixelDocument> {
+  const editable = await loadEditableFile(path);
+  return editable.kind === "document" ? editable.document : editable.project.document;
+}
+
+function isPixelProjectValue(value: unknown): value is PixelProject {
+  return Boolean(value && typeof value === "object" && (value as { format?: unknown }).format === "pixel-project");
 }
 
 async function loadPatch(path: string): Promise<Patch> {
@@ -390,6 +522,95 @@ async function writeExclusive(path: string, data: string | Buffer): Promise<void
     }
     throw error;
   }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function bundledSkillDirectory(): Promise<string> {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(moduleDirectory, "..", "skills", "editable-pixel"),
+    resolve(moduleDirectory, "..", "..", "..", "skills", "editable-pixel")
+  ];
+  for (const candidate of candidates) {
+    if (await exists(join(candidate, "SKILL.md"))) return candidate;
+  }
+  throw new CliError("SKILL_NOT_BUNDLED", "The Editable Pixel skill is missing from this installation.");
+}
+
+async function bundledMcpEntrypoint(): Promise<string> {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(moduleDirectory, "mcp.js"),
+    resolve(moduleDirectory, "..", "dist", "mcp.js")
+  ];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) return realpath(candidate);
+  }
+  throw new CliError("MCP_NOT_BUNDLED", "The Editable Pixel MCP entrypoint is missing from this installation. Run the package build again.");
+}
+
+async function registerMcpHosts(
+  host: "codex" | "claude" | "both",
+  force: boolean
+): Promise<Array<{ host: "codex" | "claude"; status: "registered" | "replaced" | "preserved"; entrypoint: string }>> {
+  const entrypoint = await bundledMcpEntrypoint();
+  const hosts: Array<"codex" | "claude"> = host === "both" ? ["codex", "claude"] : [host];
+  for (const candidate of hosts) {
+    const available = await runExternal(candidate, ["--version"], true);
+    if (available.code !== 0) {
+      throw new CliError("HOST_COMMAND_NOT_FOUND", `${candidate} is not available on PATH. Install ${candidate} before registering its MCP server.`);
+    }
+  }
+  const results: Array<{ host: "codex" | "claude"; status: "registered" | "replaced" | "preserved"; entrypoint: string }> = [];
+  for (const candidate of hosts) {
+    const current = await runExternal(candidate, ["mcp", "get", "editable-pixel"], true);
+    if (current.code === 0 && !force) {
+      results.push({ host: candidate, status: "preserved", entrypoint });
+      continue;
+    }
+    if (current.code === 0) {
+      const removed = await runExternal(candidate, ["mcp", "remove", ...(candidate === "claude" ? ["--scope", "user"] : []), "editable-pixel"]);
+      if (removed.code !== 0) throw new CliError("MCP_REGISTRATION_FAILED", removed.stderr || `Could not replace the ${candidate} MCP registration.`);
+    }
+    const args = candidate === "codex"
+      ? ["mcp", "add", "editable-pixel", "--", process.execPath, entrypoint]
+      : ["mcp", "add", "--scope", "user", "editable-pixel", "--", process.execPath, entrypoint];
+    const added = await runExternal(candidate, args);
+    if (added.code !== 0) throw new CliError("MCP_REGISTRATION_FAILED", added.stderr || `Could not register Editable Pixel with ${candidate}.`);
+    results.push({ host: candidate, status: current.code === 0 ? "replaced" : "registered", entrypoint });
+  }
+  return results;
+}
+
+function runExternal(command: string, args: string[], allowMissing = false): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (allowMissing && error.code === "ENOENT") {
+        resolvePromise({ code: 127, stdout: "", stderr: error.message });
+        return;
+      }
+      reject(error);
+    });
+    child.once("close", (code) => resolvePromise({
+      code: code ?? 1,
+      stdout: Buffer.concat(stdout).toString("utf8").trim(),
+      stderr: Buffer.concat(stderr).toString("utf8").trim()
+    }));
+  });
 }
 
 function conversionOutput(input: string, output: string | undefined, inputCount: number): string {

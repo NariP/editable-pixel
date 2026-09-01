@@ -4,6 +4,7 @@ const Identifier = Type.String({ minLength: 1, maxLength: 128 });
 const PositiveDimension = Type.Integer({ minimum: 1, maximum: 4096 });
 const Coordinate = Type.Integer({ minimum: 0, maximum: 4095 });
 const RgbaColor = Type.String({ pattern: "^#[0-9a-fA-F]{8}$" });
+const PackedNormal = Type.Integer({ minimum: 0, maximum: 0xffffff });
 
 export const RectSchema = Type.Object(
   {
@@ -59,11 +60,37 @@ export const ConversionOptionsSchema = Type.Object(
   { additionalProperties: false }
 );
 
+export const FrameLightingSchema = Type.Object(
+  {
+    x: Type.Number({ minimum: -1, maximum: 2 }),
+    y: Type.Number({ minimum: -1, maximum: 2 }),
+    height: Type.Number({ minimum: 0.05, maximum: 10 }),
+    intensity: Type.Number({ minimum: 0, maximum: 10 }),
+    ambient: Type.Number({ minimum: 0, maximum: 1 }),
+    shading: Type.Optional(Type.Union([
+      Type.Literal("smooth"),
+      Type.Literal("toon-palette")
+    ])),
+    toonSteps: Type.Optional(Type.Integer({ minimum: 3, maximum: 6 }))
+  },
+  { additionalProperties: false }
+);
+
+export const FrameLightingInterpolationSchema = Type.Union([
+  Type.Literal("hold"),
+  Type.Literal("linear"),
+  Type.Literal("ease-in"),
+  Type.Literal("ease-out"),
+  Type.Literal("ease-in-out")
+]);
+
 export const FrameSchema = Type.Object(
   {
     id: Identifier,
     name: Type.String({ minLength: 1, maxLength: 128 }),
-    durationMs: Type.Integer({ minimum: 1, maximum: 60_000 })
+    durationMs: Type.Integer({ minimum: 1, maximum: 60_000 }),
+    lighting: Type.Optional(FrameLightingSchema),
+    lightingInterpolation: Type.Optional(FrameLightingInterpolationSchema)
   },
   { additionalProperties: false }
 );
@@ -75,7 +102,8 @@ export const LayerSchema = Type.Object(
     visible: Type.Boolean(),
     opacity: Type.Number({ minimum: 0, maximum: 1 }),
     blendMode: Type.Literal("normal"),
-    frames: Type.Record(Identifier, Type.Array(Type.Integer({ minimum: 0, maximum: 255 })))
+    frames: Type.Record(Identifier, Type.Array(Type.Integer({ minimum: 0, maximum: 255 }))),
+    normalFrames: Type.Optional(Type.Record(Identifier, Type.Array(PackedNormal)))
   },
   { additionalProperties: false }
 );
@@ -145,6 +173,8 @@ export const PixelDocumentSchema = Type.Object(
 export type Rect = Static<typeof RectSchema>;
 export type Selection = Static<typeof SelectionSchema>;
 export type ConversionOptions = Static<typeof ConversionOptionsSchema>;
+export type FrameLighting = Static<typeof FrameLightingSchema>;
+export type FrameLightingInterpolation = Static<typeof FrameLightingInterpolationSchema>;
 export type Frame = Static<typeof FrameSchema>;
 export type Layer = Static<typeof LayerSchema>;
 export type Region = Static<typeof RegionSchema>;

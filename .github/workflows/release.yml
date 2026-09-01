@@ -35,6 +35,7 @@ jobs:
       - run: pnpm verify
       - run: pnpm test:e2e
       - run: pnpm test:distribution
+      - run: pnpm test:source-install
       - name: Build release assets
         run: |
           mkdir release-artifacts

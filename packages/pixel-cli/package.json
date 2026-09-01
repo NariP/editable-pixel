@@ -1,14 +1,31 @@
 {
   "name": "editable-pixel",
   "version": "1.0.0",
+  "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NariP/editable-pixel.git"
+  },
+  "homepage": "https://github.com/NariP/editable-pixel#readme",
+  "bugs": {
+    "url": "https://github.com/NariP/editable-pixel/issues"
+  },
+  "keywords": ["pixel-art", "sprite", "mcp", "codex", "claude", "local-first"],
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "bin": {
     "editable-pixel": "./dist/cli.js",
     "editable-pixel-server": "./dist/server-runner.js",
     "editable-pixel-mcp": "./dist/mcp.js"
   },
   "main": "./dist/cli.js",
-  "files": ["dist", "web", "README.md", "LICENSE"],
+  "files": ["dist", "web", "skills", "docs", "install.sh", "README.md", "README.ko.md", "CONTRIBUTING.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup --config tsup.config.ts && node scripts/prepare-package.mjs",
     "prepack": "pnpm build",
@@ -30,6 +47,7 @@
     "@editable-pixel/core": "workspace:*",
     "@editable-pixel/document": "workspace:*",
     "@editable-pixel/mcp": "workspace:*",
+    "@editable-pixel/project": "workspace:*",
     "@editable-pixel/renderer": "workspace:*",
     "@editable-pixel/server": "workspace:*",
     "tsup": "8.5.1"

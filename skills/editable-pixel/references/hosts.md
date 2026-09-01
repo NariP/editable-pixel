@@ -1,11 +1,19 @@
 # Host-specific open and MCP setup
 
-## Codex
-
-Register the project-local stdio MCP server once:
+Install the bundled Skill and register its absolute MCP entrypoint in both hosts:
 
 ```bash
-codex mcp add editable-pixel -- editable-pixel-mcp
+editable-pixel install-skill --host both
+```
+
+Use `--host codex` or `--host claude` to install only one host. Existing Skill directories and MCP registrations are preserved unless `--force` is explicit. `--target` copies a Skill for testing without touching host configuration; `--no-register-mcp` intentionally skips registration.
+
+## Codex
+
+Verify automatic user-level registration:
+
+```bash
+codex mcp list
 ```
 
 Open a document for the Codex app:
@@ -18,10 +26,10 @@ The JSON contains a one-time `launchUrl`. If an in-app browser tool is available
 
 ## Claude Code
 
-Register the project-local stdio MCP server once:
+Verify automatic user-level registration:
 
 ```bash
-claude mcp add --scope project editable-pixel -- editable-pixel-mcp
+claude mcp list
 ```
 
 Claude Code does not provide the same Codex in-app browser panel. Open the editor in the system browser:
@@ -30,7 +38,7 @@ Claude Code does not provide the same Codex in-app browser panel. Open the edito
 editable-pixel open character.pixel.json --host claude
 ```
 
-The browser and Claude MCP process use the same session server. The user selects pixels in the browser and continues the edit in Claude Code.
+The browser and Claude MCP process use the same session server. The user or Claude may set the same Canvas Selection, and both edit through the shared History and Undo/Redo stack.
 
 ## Plain browser or CLI-only
 

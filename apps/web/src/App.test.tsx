@@ -1,11 +1,18 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createPixelDocument } from "@editable-pixel/document";
+import { createPixelProject, serializePixelProject } from "@editable-pixel/project";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { App, mergeFrameDocuments } from "./App.js";
+import { App, mergeFrameDocuments, resolveCanvasOnionSkin } from "./App.js";
 
 beforeAll(() => {
   vi.stubGlobal("PointerEvent", MouseEvent);
+  class TestResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
   class TestImageData {
     constructor(
       public data: Uint8ClampedArray,
@@ -31,9 +38,31 @@ beforeAll(() => {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  window.localStorage.clear();
 });
 
+function addBlankFrame() {
+  fireEvent.click(screen.getByRole("button", { name: "Add frame" }));
+  fireEvent.click(screen.getByRole("button", { name: /Blank frame/ }));
+}
+
 describe("Editable Pixel web editor", () => {
+  it("hides onion skin overlays during playback without changing the editor settings", () => {
+    const settings = { previous: 1, next: 1, opacity: 0.3 };
+
+    expect(resolveCanvasOnionSkin(settings, ["frame-1", "frame-2"], true)).toEqual({
+      previous: 0,
+      next: 0,
+      opacity: 0.3,
+      frameIds: ["frame-1", "frame-2"]
+    });
+    expect(resolveCanvasOnionSkin(settings, ["frame-1", "frame-2"], false)).toEqual({
+      ...settings,
+      frameIds: ["frame-1", "frame-2"]
+    });
+    expect(settings).toEqual({ previous: 1, next: 1, opacity: 0.3 });
+  });
+
   it("combines converted images into one document with ordered frames", () => {
     const first = createPixelDocument({ width: 2, height: 1, palette: ["#00000000", "#ff0000ff"], pixels: [1, 0] });
     const second = createPixelDocument({ width: 2, height: 1, palette: ["#00000000", "#ff0000ff"], pixels: [0, 1] });
@@ -41,6 +70,8 @@ describe("Editable Pixel web editor", () => {
     const sequence = mergeFrameDocuments([first, second], ["source-a", "source-b"]);
 
     expect(sequence.frames.map((frame) => frame.id)).toEqual(["source-a", "source-b"]);
+    expect(sequence.frames[0]!.lighting).toEqual(first.frames[0]!.lighting);
+    expect(sequence.frames[1]!.lighting).toBeUndefined();
     expect(sequence.layers[0]!.frames["source-a"]).toEqual([1, 0]);
     expect(sequence.layers[0]!.frames["source-b"]).toEqual([0, 1]);
   });
@@ -61,10 +92,29 @@ describe("Editable Pixel web editor", () => {
     expect(sequence.frames.map((frame) => frame.durationMs)).toEqual([180, 80]);
   });
 
+  it("keeps lighting keyframes when conversion settings rebuild an animation", () => {
+    const first = createPixelDocument({ width: 2, height: 1 });
+    const second = createPixelDocument({ width: 2, height: 1 });
+    const lighting = { ...first.frames[0]!.lighting!, x: 0.8 };
+
+    const sequence = mergeFrameDocuments(
+      [first, second],
+      ["source-a", "source-b"],
+      [
+        { id: "source-a", name: "Frame 1", durationMs: 180, lighting, lightingInterpolation: "linear" },
+        { id: "source-b", name: "Frame 2", durationMs: 80 }
+      ]
+    );
+
+    expect(sequence.frames[0]).toMatchObject({ lighting, lightingInterpolation: "linear" });
+    expect(sequence.frames[1]!.lighting).toBeUndefined();
+  });
+
   it("renders the canvas-first conversion, editing, session, and export workspace", () => {
     render(<App />);
 
     expect(screen.getByRole("img", { name: "Editable Pixel" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toBe("Untitled Project");
     expect(screen.queryByText("EDITABLE PIXEL")).toBeNull();
     expect(screen.getByRole("tab", { name: "Convert" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Edit" })).toBeTruthy();
@@ -78,27 +128,88 @@ describe("Editable Pixel web editor", () => {
     expect(screen.queryByRole("button", { name: "DROP / PASTE IMAGE" })).toBeNull();
     expect(screen.getByRole("button", { name: "Export" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Compare original" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save As" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save As" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Sources/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("heading", { name: "Sources" })).toBeNull();
     expect(screen.queryByText("AI SOURCE")).toBeNull();
     expect(screen.queryByText(/reconversion creates a new variant/i)).toBeNull();
     expect(screen.getByRole("button", { name: "Session details" }).textContent).toContain("Standalone");
   });
 
-  it("keeps source versions and save actions outside the Convert, Edit, and Frames tabs", () => {
+  it("keeps project sources and Save As outside the Convert, Edit, and Frames tabs", () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
-    expect(screen.getByRole("heading", { name: "Source Variants" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    const scopeToggle = screen.getByRole("button", { name: /Sources/ });
+    expect(scopeToggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(scopeToggle);
+    expect(scopeToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("heading", { name: "Retained originals" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
     expect(screen.getByRole("button", { name: "Save As" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
+    expect(screen.getByRole("heading", { name: "Retained originals" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Convert" }));
-    expect(screen.getByRole("heading", { name: "Source Variants" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Retained originals" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
-    expect(screen.getByRole("heading", { name: "Source Variants" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Retained originals" })).toBeTruthy();
+  });
+
+  it("keeps one canvas per project and exposes retained sources without asset controls", () => {
+    render(<App />);
+
+    expect(screen.queryByLabelText(/assets?$/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add blank asset" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Asset name" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Sources/ }));
+    expect(screen.getByRole("heading", { name: "Retained originals" })).toBeTruthy();
+    expect(screen.getByText("No source attached")).toBeTruthy();
+  });
+
+  it("uses Save As to create and switch to an independently named project", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+    const name = screen.getByRole("textbox", { name: "Save As project name" });
+    fireEvent.change(name, { target: { value: "Robot Collection" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toContain("Robot Collection"));
+  });
+
+  it("renames the current project directly from the project menu", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
+    const name = screen.getByRole("textbox", { name: "Project name" });
+    fireEvent.change(name, { target: { value: "Robot Animation" } });
+    fireEvent.blur(name);
+
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toContain("Robot Animation"));
+  });
+
+  it("creates a source-less project and opens a complete Project file from the project menu", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(screen.queryByRole("textbox", { name: "New project name" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save As" })).toBeNull());
+    expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toContain("Untitled Project");
+    expect(screen.getByRole("button", { name: /Sources/ }).textContent).toContain("No retained source");
+
+    const imported = createPixelProject({ id: "project-opened", name: "Opened Robot Project", width: 8, height: 8 });
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
+    fireEvent.change(screen.getByLabelText("Open Project file input"), {
+      target: { files: [new File([serializePixelProject(imported)], "robot.pixel-project.json", { type: "application/json" })] }
+    });
+
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toContain("Opened Robot Project"));
+    fireEvent.click(screen.getByRole("button", { name: "Project menu" }));
     expect(screen.getByRole("button", { name: "Save As" })).toBeTruthy();
   });
 
@@ -111,16 +222,39 @@ describe("Editable Pixel web editor", () => {
       target: { files: [later, earlier] }
     });
 
-    expect(screen.getByRole("dialog", { name: "Import 2 images" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Choose an import purpose" })).toBeTruthy();
     const list = screen.getByRole("list", { name: "Frame order" });
     expect(list.children[0]?.textContent).toContain("walk_2.png");
     expect(list.children[1]?.textContent).toContain("walk_10.png");
-    expect(screen.getByRole("button", { name: "Import as animation · 2 frames" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Import as 2 images" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Replace Canvas/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Add as Frames/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Import Sprite Sheet/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /Add Source/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Replace Source/ }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Move walk_10.png earlier" }));
     expect(list.children[0]?.textContent).toContain("walk_10.png");
     expect(list.children[1]?.textContent).toContain("walk_2.png");
+  });
+
+  it("adds and explicitly replaces retained sources without creating variants", async () => {
+    render(<App />);
+    const first = new File(["first"], "robot.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Import files"), { target: { files: [first] } });
+    fireEvent.click(screen.getByRole("button", { name: /Add Source/ }));
+
+    await waitFor(() => expect(screen.getByLabelText("1 source")).toBeTruthy());
+    expect(screen.getByText("robot.png", { selector: ".source-name b" })).toBeTruthy();
+    expect(screen.queryByText(/\bV1\b|\bV2\b/)).toBeNull();
+
+    const second = new File(["second"], "robot-updated.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Import files"), { target: { files: [second] } });
+    expect(screen.getByRole("button", { name: /Replace Source/ }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /Replace Source/ }));
+
+    await waitFor(() => expect(screen.getByText("robot-updated.png", { selector: ".source-name b" })).toBeTruthy());
+    expect(screen.getByLabelText("1 source")).toBeTruthy();
+    expect(screen.queryByText("robot.png", { selector: ".source-name b" })).toBeNull();
   });
 
   it("uses a sortable layer row with header add and right-side visibility actions", () => {
@@ -153,15 +287,19 @@ describe("Editable Pixel web editor", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
 
     expect(screen.getByRole("heading", { name: "Frames" })).toBeTruthy();
+    expect(screen.getByRole("separator", { name: "Resize clips and frames" })).toBeTruthy();
     expect(screen.getByLabelText("1 frame")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add blank frame" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add image frames" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add frame" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add frame" }));
+    expect(screen.getByRole("button", { name: /Blank frame/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /From images/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add frame" }));
     expect(screen.getByRole("button", { name: "Play" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Reorder Frame 1" }).hasAttribute("disabled")).toBe(true);
     expect(screen.queryByRole("button", { name: "Duplicate" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete Frame 1" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add blank frame" }));
+    addBlankFrame();
     expect(container.querySelectorAll(".frame-stack-item")).toHaveLength(2);
     expect(screen.getByLabelText("2 frames")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Play" }).hasAttribute("disabled")).toBe(false);
@@ -187,7 +325,7 @@ describe("Editable Pixel web editor", () => {
   it("duplicates the active frame when frames own copy and paste shortcuts", () => {
     const { container } = render(<App />);
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add blank frame" }));
+    addBlankFrame();
 
     const duration = screen.getByRole("textbox", { name: "Frame 2 duration" });
     fireEvent.change(duration, { target: { value: "250" } });
@@ -200,6 +338,36 @@ describe("Editable Pixel web editor", () => {
     expect(screen.getByRole("textbox", { name: "Frame 2 duration" }).getAttribute("value")).toBe("250");
     expect(screen.getByRole("textbox", { name: "Frame 3 duration" }).getAttribute("value")).toBe("250");
     expect(screen.getByRole("button", { name: "Select Frame 3 frame" }).closest(".frame-stack-item")?.className).toContain("active keyboard-target");
+  });
+
+  it("creates independent clips and keeps frame actions inside the active clip", async () => {
+    const { container } = render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
+
+    expect(screen.getByLabelText("1 clip")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add clip" }));
+    expect(screen.getByLabelText("2 clips")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Select Clip 2 clip" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toBe("Untitled Project/Clip 2");
+    expect(screen.queryByRole("button", { name: "Rename clip" })).toBeNull();
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Select Clip 2 clip" }));
+    const clipNameInput = screen.getByRole("textbox", { name: "Clip name" }) as HTMLInputElement;
+    expect(clipNameInput.value).toBe("Clip 2");
+    expect(clipNameInput.closest(".clip-item")?.textContent).toContain("1 frame");
+    expect(within(clipNameInput.closest(".clip-item") as HTMLElement).getByRole("button", { name: "Delete clip" })).toBeTruthy();
+    expect(container.querySelectorAll(".frame-stack-item")).toHaveLength(1);
+
+    fireEvent.change(clipNameInput, { target: { value: "Jump" } });
+    fireEvent.blur(clipNameInput);
+    expect(screen.getByRole("navigation", { name: "Project location" }).textContent).toContain("Jump");
+
+    addBlankFrame();
+    expect(container.querySelectorAll(".frame-stack-item")).toHaveLength(2);
+    expect(screen.getByLabelText("2 frames")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select Clip 1 clip" }));
+    await waitFor(() => expect(container.querySelectorAll(".frame-stack-item")).toHaveLength(1));
+    expect(screen.getByLabelText("1 frame")).toBeTruthy();
   });
 
   it("routes clipboard and delete shortcuts to the visible keyboard target", () => {
@@ -244,28 +412,144 @@ describe("Editable Pixel web editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Session details" }));
 
     expect(await screen.findByRole("heading", { name: "Agent workflow" })).toBeTruthy();
-    expect(screen.getByText("Pixels outside the selection stay unchanged", { exact: false })).toBeTruthy();
+    expect(screen.getByText("Validated agent actions apply immediately", { exact: false })).toBeTruthy();
+    expect(screen.getByText("AI and browser edits share the same History", { exact: false })).toBeTruthy();
   });
 
-  it("offers scaled PNG, Pixel JSON, and batch exports from one header popover", async () => {
+  it("offers scaled Frame, Clip, and Project exports from one header popover", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
 
     const png = await screen.findByRole("button", { name: "PNG" });
     expect(png.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Normal map" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Lit PNG" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "GIF" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Export scope" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Current Frame" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Current Clip" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Entire Project" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "PNG scale" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "8×" }));
     expect(document.querySelector(".export-size")?.textContent).toBe("32 × 32→256 × 256");
 
-    fireEvent.click(screen.getByText("More exports"));
-    expect(screen.getByRole("button", { name: "All layers" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "All frames" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Sprite sheet" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "GIF" }));
+    expect(screen.getByRole("button", { name: "Current Frame" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Current Clip" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Export Current Clip GIF" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Pixel JSON" }));
+    fireEvent.click(screen.getByRole("button", { name: "JSON" }));
     expect(screen.queryByRole("group", { name: "PNG scale" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Export Pixel JSON" })).toBeTruthy();
-    expect(screen.queryByText("More exports")).toBeNull();
+    expect(screen.getByRole("button", { name: "Current Frame" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Current Clip" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Export Project" })).toBeTruthy();
+  });
+
+  it("edits normal maps with a direction picker and live light controls", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
+
+    expect(screen.getByRole("heading", { name: "Material Maps" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Normal" }));
+    expect(screen.getByRole("slider", { name: "Normal direction" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Lit preview" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Lighting shading" }).textContent).toContain("Toon palette");
+    expect(screen.getByRole("combobox", { name: "Toon palette ramp steps" }).textContent).toContain("4 steps");
+    expect(screen.getByRole("button", { name: "About Palette ramp" })).toBeTruthy();
+    expect(screen.queryByText(/Normal directions then choose/)).toBeNull();
+    expect(screen.getByRole("slider", { name: "Light strength" })).toBeTruthy();
+    expect(screen.getByRole("slider", { name: "Ambient light" })).toBeTruthy();
+    const animate = screen.getByRole("switch", { name: "Animate lighting" });
+    expect(animate.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("group", { name: "Lighting timeline" })).toBeNull();
+    fireEvent.click(animate);
+    expect(animate.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("group", { name: "Lighting timeline" })).toBeTruthy();
+    const transition = screen.getByRole("combobox", { name: "Lighting transition" });
+    expect(transition.textContent).toContain("Ease in-out");
+    fireEvent.click(transition);
+    fireEvent.click(screen.getByRole("option", { name: "Ease in" }));
+    expect(transition.textContent).toContain("Ease in");
+    expect(screen.getByRole("button", { name: "Move light" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide light marker" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Hide light marker" }));
+    expect(screen.queryByRole("button", { name: "Move light" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Show light marker" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Show light marker" }));
+    expect(screen.getByRole("button", { name: "Move light" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset normal map" })).toBeTruthy();
+    expect(document.querySelector(".toolbar-map")?.textContent).toBe("Normal · Lit");
+
+    fireEvent.click(screen.getByRole("button", { name: "Map" }));
+    expect(screen.queryByRole("button", { name: "Move light" })).toBeNull();
+  });
+
+  it("creates lighting keyframes from a compact frame timeline", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
+    addBlankFrame();
+    addBlankFrame();
+    fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Normal" }));
+
+    fireEvent.click(screen.getByRole("switch", { name: "Animate lighting" }));
+    expect(screen.getAllByRole("button", { name: /Remove Frame .* lighting keyframe/ })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Select Frame 2 in lighting timeline" }));
+    expect(screen.getByRole("button", { name: "Add Frame 2 lighting keyframe" })).toBeTruthy();
+    expect(screen.getByText("Frame 2 is interpolated")).toBeTruthy();
+
+    const strength = screen.getByRole("slider", { name: "Light strength" });
+    fireEvent.change(strength, { target: { value: "1.2" } });
+    fireEvent.pointerUp(strength);
+    expect(screen.getByRole("button", { name: "Remove Frame 2 lighting keyframe" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Remove Frame .* lighting keyframe/ })).toHaveLength(3);
+  });
+
+  it("moves the normal preview light by dragging on the canvas", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Normal" }));
+
+    const shell = document.querySelector(".pixel-canvas-shell") as HTMLDivElement;
+    shell.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 100,
+      bottom: 100,
+      width: 100,
+      height: 100,
+      toJSON: () => ({})
+    });
+    const light = screen.getByRole("button", { name: "Move light" });
+    fireEvent.pointerDown(light, { clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(light, { clientX: 80, clientY: 70, pointerId: 1 });
+    fireEvent.pointerUp(light, { pointerId: 1 });
+
+    expect(light.style.left).toBe("80%");
+    expect(light.style.top).toBe("70%");
+  });
+
+  it("offers normal-map PNG and sprite-sheet exports", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Normal map" }));
+
+    expect(screen.getByRole("button", { name: "Export Current Frame Normal" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Current Clip" }));
+    expect(screen.getByRole("button", { name: "Export Current Clip Normal" })).toBeTruthy();
+  });
+
+  it("offers a Lit PNG export with the current preview light", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Lit PNG" }));
+
+    expect(screen.getByRole("button", { name: "Export Current Frame Lit" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "PNG scale" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Current Clip" }));
+    expect(screen.getByRole("button", { name: "Export Current Clip Lit" })).toBeTruthy();
   });
 
   it("defaults to Select and switches editing tools from the floating toolbar", () => {
@@ -357,7 +641,8 @@ describe("Editable Pixel web editor", () => {
     render(<App />);
 
     expect(screen.queryByRole("textbox", { name: "Fixed palette" })).toBeNull();
-    expect(screen.getByText(/Auto from source/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "About Fixed Palette" })).toBeTruthy();
+    expect(screen.queryByText(/Auto from source/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Add fixed palette color" }));
     const colorText = screen.getByRole("textbox", { name: "Choose fixed palette color" });
     fireEvent.change(colorText, { target: { value: "#ff0000" } });
@@ -369,7 +654,7 @@ describe("Editable Pixel web editor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove fixed palette color 1" }));
     expect(screen.queryByLabelText("Fixed palette color 1")).toBeNull();
-    expect(screen.getByText(/Auto from source/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "About Fixed Palette" })).toBeTruthy();
   });
 
   it("keeps palette indices while moving color creation into the shared swatch grid", () => {
@@ -492,7 +777,7 @@ describe("Editable Pixel web editor", () => {
     if (!(shell instanceof HTMLElement)) throw new Error("Pixel canvas shell is not rendered.");
 
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add blank frame" }));
+    addBlankFrame();
 
     fireEvent.click(screen.getByRole("tab", { name: "Edit" }));
     fireEvent.click(screen.getByRole("button", { name: "Palette 2: #f4f0e6ff" }));
@@ -574,13 +859,15 @@ describe("Editable Pixel web editor", () => {
     expect(screen.queryByRole("button", { name: "Onion skin" })).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
+    const onionSettings = screen.getByRole("button", { name: "Onion skin settings" });
+    expect(onionSettings.hasAttribute("disabled")).toBe(true);
+    addBlankFrame();
+
+    expect(onionSettings.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(onionSettings);
+    expect(screen.getByRole("heading", { name: "Onion Skin" })).toBeTruthy();
     const previous = screen.getByRole("switch", { name: "Show previous frame" });
     const next = screen.getByRole("switch", { name: "Show next frame" });
-    expect(previous.hasAttribute("disabled")).toBe(true);
-    expect(next.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Add blank frame" }));
-
-    expect(screen.getByRole("heading", { name: "Onion Skin" })).toBeTruthy();
     expect(previous.hasAttribute("disabled")).toBe(false);
     expect(next.hasAttribute("disabled")).toBe(false);
     expect(previous.getAttribute("aria-checked")).toBe("true");

@@ -14,6 +14,7 @@
     "test": "pnpm -r --if-present test",
     "test:e2e": "playwright test",
     "test:distribution": "node tests/distribution/package-install.mjs",
+    "test:source-install": "node tests/distribution/source-install.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "verify": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
   },

@@ -1,4 +1,4 @@
 interface:
   display_name: "Editable Pixel"
-  short_description: "Edit AI pixel assets with browser review"
-  default_prompt: "Use $editable-pixel to open this AI-generated pixel asset, let me select an area, and preview a safe edit."
+  short_description: "Inspect and edit live AI pixel assets"
+  default_prompt: "Use $editable-pixel to inspect the active Project with sparse context, select the requested pixels in the shared editor, apply the edit immediately, and keep it recoverable through shared Undo/Redo."

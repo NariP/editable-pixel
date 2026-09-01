@@ -1,66 +1,118 @@
 # MCP and coding-agent integration
 
-`editable-pixel-mcp` is a local stdio MCP server. It discovers the loopback session daemon through its protected registry and calls only that daemon's API; it does not implement separate pixel-processing logic.
+`editable-pixel-mcp` is a local stdio MCP server. It connects Codex or Claude to the same protected loopback Session Server used by the web editor. The browser, MCP, CLI, Project autosave, Selection, revision, History, Undo, and Redo all operate on one canonical session.
 
-## Register the server
-
-Install the `editable-pixel` npm package first, then run one of the verified host commands:
+## Install the package, Skill, and MCP
 
 ```bash
-# Codex
-codex mcp add editable-pixel -- editable-pixel-mcp
+npm install -g editable-pixel
 
-# Claude Code, current project
-claude mcp add --scope project editable-pixel -- editable-pixel-mcp
+# Install the bundled Skill and register its absolute MCP entrypoint
+# at user scope in both hosts.
+editable-pixel install-skill --host both
 ```
 
-Start a session before using the tools:
+Verify the real host configuration with `codex mcp get editable-pixel` and `claude mcp get editable-pixel`. Use `--no-register-mcp` only for externally managed host configuration.
+
+Open a Project or Pixel Document:
 
 ```bash
-editable-pixel open ./hero.pixel.json --host codex --json
+editable-pixel --json open ./robot-pack.pixel-project.json --host codex
 # or
-editable-pixel open ./hero.pixel.json --host claude
+editable-pixel open ./robot-pack.pixel-project.json --host claude
 ```
 
-Codex can open the returned one-time URL in its in-app browser. Claude Code uses the system browser. The browser, CLI, and MCP process still share one session ID, document revision, and selection.
+Codex can open the returned one-time URL in its in-app browser. Claude uses the system browser. The URL token is exchanged for a session token and removed from browser history.
 
-## Tools
+## Figma-inspired context flow
+
+The default flow keeps large pixel arrays out of the initial prompt:
+
+```text
+list_sessions (only when needed)
+  → get_metadata
+      → get_design_context | get_palette_context | get_motion_context
+          → optional get_screenshot
+              → set_selection when target differs
+                  → use_editable_pixel
+                      → get_history | undo | redo
+```
+
+When a request depends on the connected web app rather than document pixels, branch from metadata to `get_web_context`, then use one semantic `control_web`, `import_files`, or `export_web` call. Do not reproduce those operations with screenshot-coordinate clicks.
+
+`get_metadata` returns IDs, names, hierarchy, canvas, counts, active context, selection, and revision. It never returns frame pixel arrays. `get_design_context` returns only the active selection, explicit bounds, or content bounds plus 0–8 pixels of padding and is capped at 65,536 pixels.
+
+## Primary tools
 
 | Tool | Mutation | Purpose |
 | --- | --- | --- |
-| `list_sessions` | No | Paginate active local sessions |
-| `get_session` | No | Read revision, clients, selection, and pending patches |
-| `get_document_summary` | No | Read canvas, palette, layers, frames, bounds, alignment, and pivot without pixel arrays |
-| `get_selection` | No | Read the current browser rectangle |
-| `create_patch` | No document mutation | Build a deterministic bounded patch against the current revision |
-| `preview_patch` | No document mutation | Validate and show before/after state in the web editor |
-| `apply_patch` | Yes | Apply a previously previewed patch ID and persist the document |
-| `reject_patch` | Pending state only | Discard a pending preview |
-| `undo` | Yes | Apply the inverse of the latest committed edit |
-| `redo` | Yes | Reapply the latest undone edit |
-| `validate_document` | No | Run schema and semantic validation |
-| `render_preview` | No | Return a nearest-neighbor PNG preview as MCP image content |
+| `list_sessions` | No | Find active local sessions |
+| `get_metadata` | No | Sparse Project/Clip/Frame/Layer/canvas discovery |
+| `get_design_context` | No | Focused palette-index matrix and optional normals |
+| `get_palette_context` | No | Palette indices, RGBA values, transparency, and exact usage |
+| `get_motion_context` | No | Clip order, durations, lighting keyframes, easing, resolved lights |
+| `get_history` | No | User and AI actions in shared Undo/Redo order |
+| `get_screenshot` | No | Optional visual understanding or post-edit QA |
+| `get_web_context` | No | Connected tab, tool, Project, Source, conversion, playback, and capability state |
+| `set_selection` | Yes | Update the same Selection rendered by the web Canvas |
+| `use_editable_pixel` | Yes | Immediately apply one validated AI edit transaction |
+| `control_web` | Yes | Semantic tab/view/target/playback/conversion/Project/Source operations |
+| `import_files` | Yes | Import validated local PNG, WebP, JPEG, Pixel JSON, or Project JSON into the browser workflow |
+| `export_web` | Browser download | Trigger the header Export formats, scopes, and integer scales |
+| `undo` / `redo` | Yes | Restore the shared session History |
+| `validate_document` | No | Validate supplied Pixel Document JSON |
+| `export_frame` | Output file | Export Color, Normal, or Lit PNG without overwriting |
 
-Every tool uses strict input schemas, structured output, human-readable text, and MCP read/write annotations. `response_format` is available on text tools as `markdown` or `json`. Errors include a stable code and a concrete next action.
+Compatibility tools `get_session`, `get_project_context`, `get_document_summary`, `get_selection`, `get_selection_context`, `create_patch`, `preview_patch`, `apply_patch`, `reject_patch`, and `render_preview` remain available. Preview approval is not part of the default Skill workflow.
 
-## Required edit protocol
+## Shared Selection
 
-1. Call `list_sessions` when no session ID is known.
-2. Call `get_session` and `get_selection`.
-3. If selection is absent, ask the user to click `[ SELECT AREA ]` and drag a rectangle.
-4. Call `create_patch` with the user request, target coordinates, and palette indices. Keep `require_selection` enabled.
-   If the requested color is absent, pass one or more `#RRGGBBAA` values in `new_colors`; their indices are appended after the current palette and are applied atomically with the bounded pixel changes.
-5. Call `preview_patch` with the returned patch.
-6. Wait for the user's instruction to apply or reject the preview.
-7. Call `apply_patch` with the pending patch ID or `reject_patch`.
-8. Call `get_session` or `validate_document` to confirm the resulting revision.
+`set_selection` supports:
 
-The server rejects a patch if its revision is stale, its target differs from the active layer/frame, any changed coordinate is outside the selection, the outside-selection hash differs, a new palette entry is invalid or duplicated, or the opened file changed on disk.
+- `rect`: an exact rectangle
+- `pixels`: a non-contiguous coordinate mask
+- `color`: every use of one palette index in the target Layer/Frame
+- `connected`: a four-way connected component
+- `outline`: visible boundary pixels
+- `content_bounds`: current content bounds
+- `clear`: remove the Selection
 
-## CLI fallback
+The modes `replace`, `add`, `remove`, and `toggle` match the web Selection behavior. Selection changes are document transactions, appear immediately through WebSocket, and participate in Undo/Redo.
 
-Every session and patch action has a CLI equivalent. This allows the agent workflow to continue when the host cannot load MCP. See [CLI reference](./cli.md) and the reusable instructions in `skills/editable-pixel`.
+## Immediate editing
 
-## Compatibility
+`use_editable_pixel` accepts a strict discriminated action union:
 
-The MCP server, CLI, and Pixel Document implementation ship in the same npm package version. A tagged release records the supported Pixel Document version in its release notes. Unknown future document versions and incompatible patch revisions are rejected rather than coerced.
+- Pixel: paint coordinates or Selection, erase, replace color, move, flip
+- Normal: paint packed normals, reset selected normals
+- Palette: add, remove with replacement, replace/merge, reorder
+- Layer: add, remove, duplicate, rename, reorder, visibility, opacity
+- Frame: add, remove, duplicate, rename, reorder, duration
+- Lighting: set keyframe position/height/intensity/ambient, choose Smooth or `toon-palette` shading with 3–6 ramp steps, set Hold/Linear/Ease interpolation, remove keyframe
+- Clip: create, remove, rename, reorder Frames, reorder Clips
+- Project: rename
+
+Each action requires a concise `reason`. The server validates the action, current target, Selection, palette, schema, and revision; applies one transaction; records actor=`ai`; persists writable files; and broadcasts the resulting document to the browser. Use `undo` instead of an approval gate when a result should be reverted.
+
+## Import, Convert, and Export boundary
+
+MCP owns live context, editing, and the browser's semantic file workflows. `import_files` accepts only absolute regular files, rejects symlinks and unsupported formats, and applies per-file/batch size limits before transmitting bytes to the connected loopback browser. It is not an arbitrary filesystem or shell interface:
+
+- Convert image files: `editable-pixel convert`
+- Import into Project or add Source/Frames/Sprite Sheet: `import_files`
+- Validate or render a file: `editable-pixel validate`, `editable-pixel render`
+- Trigger the browser's Project/Clip/Frame downloads: `export_web`
+- Export a full server-side bundle to a concrete directory: `editable-pixel export`
+- Export the active Color/Normal/Lit Frame into the session output directory: `export_frame`
+
+Existing outputs are never replaced.
+
+## Error recovery
+
+- `SELECTION_REQUIRED`: call `set_selection` or use an action that does not require a Selection.
+- `DESIGN_CONTEXT_TOO_LARGE`: select a smaller region or pass explicit bounds.
+- `FILE_CONFLICT`: reopen or refresh the session; never use last-write-wins.
+- `OUTPUT_EXISTS`: choose a new filename.
+- `SERVER_NOT_RUNNING`: run `editable-pixel open <file>`.
+
+All tools return structured content and actionable error codes. The server exposes neither shell execution nor arbitrary path writes.

@@ -13,10 +13,15 @@ coverage/
 playwright-report/
 test-results/
 artifacts/
+docs/test-assets/qa-*/
 packages/pixel-cli/web/
 packages/pixel-cli/README.md
 packages/pixel-cli/README.ko.md
+packages/pixel-cli/CONTRIBUTING.md
 packages/pixel-cli/LICENSE
+packages/pixel-cli/skills/
+packages/pixel-cli/docs/
+packages/pixel-cli/install.sh
 
 # Local files
 .DS_Store

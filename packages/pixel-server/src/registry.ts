@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export interface ServerRegistry {
@@ -10,8 +10,7 @@ export interface ServerRegistry {
 }
 
 export function registryPath(): string {
-  const user = typeof process.getuid === "function" ? process.getuid() : "user";
-  return process.env.EDITABLE_PIXEL_REGISTRY ?? join(tmpdir(), `editable-pixel-${user}`, "server.json");
+  return process.env.EDITABLE_PIXEL_REGISTRY ?? join(homedir(), ".editable-pixel", "server.json");
 }
 
 export async function readRegistry(): Promise<ServerRegistry | undefined> {

@@ -3,6 +3,8 @@ import { Value } from "@sinclair/typebox/value";
 import {
   PixelDocumentSchema,
   type ConversionOptions,
+  type Frame,
+  type FrameLighting,
   type PixelDocument,
   type Rect,
   type Selection
@@ -18,6 +20,118 @@ export interface ValidationIssue {
 export interface ValidationResult {
   valid: boolean;
   issues: ValidationIssue[];
+}
+
+/** Packed RGB for a surface facing the viewer: rgb(128, 128, 255). */
+export const NEUTRAL_NORMAL = 0x8080ff;
+
+export const DEFAULT_FRAME_LIGHTING = {
+  x: 0.32,
+  y: 0.22,
+  height: 0.7,
+  intensity: 0.9,
+  ambient: 0.65,
+  shading: "toon-palette",
+  toonSteps: 4
+} as const satisfies PixelDocument["frames"][number]["lighting"];
+
+/**
+ * Resolves the light at a frame start time from lighting keyframes.
+ * A frame with `lighting` is a keyframe; missing values are derived within
+ * the supplied frame order and never interpolate across that boundary.
+ */
+export function resolveFrameLighting(
+  document: PixelDocument,
+  orderedFrameIds: readonly string[],
+  frameId: string
+): FrameLighting {
+  const frames = orderedFrameIds.map((id) => {
+    const frame = document.frames.find((candidate) => candidate.id === id);
+    if (!frame) throw new Error(`Frame ${id} does not exist.`);
+    return frame;
+  });
+  const frameIndex = frames.findIndex((frame) => frame.id === frameId);
+  if (frameIndex < 0) throw new Error(`Frame ${frameId} is outside the lighting sequence.`);
+
+  const exact = frames[frameIndex]!.lighting;
+  if (exact) return resolvedLighting(exact);
+
+  let previousIndex = -1;
+  let nextIndex = -1;
+  for (let index = frameIndex - 1; index >= 0; index -= 1) {
+    if (frames[index]!.lighting) {
+      previousIndex = index;
+      break;
+    }
+  }
+  for (let index = frameIndex + 1; index < frames.length; index += 1) {
+    if (frames[index]!.lighting) {
+      nextIndex = index;
+      break;
+    }
+  }
+
+  if (previousIndex < 0 && nextIndex < 0) return { ...DEFAULT_FRAME_LIGHTING };
+  if (previousIndex < 0) return resolvedLighting(frames[nextIndex]!.lighting!);
+  const previous = frames[previousIndex]!;
+  if (nextIndex < 0 || previous.lightingInterpolation === "hold" || !previous.lightingInterpolation) {
+    return resolvedLighting(previous.lighting!);
+  }
+
+  const next = frames[nextIndex]!;
+  let elapsedMs = 0;
+  let segmentMs = 0;
+  for (let index = previousIndex; index < nextIndex; index += 1) {
+    const durationMs = frames[index]!.durationMs;
+    segmentMs += durationMs;
+    if (index < frameIndex) elapsedMs += durationMs;
+  }
+  const progress = segmentMs > 0 ? elapsedMs / segmentMs : 0;
+  return interpolateFrameLighting(
+    previous.lighting!,
+    next.lighting!,
+    easeLightingProgress(progress, previous.lightingInterpolation)
+  );
+}
+
+function easeLightingProgress(
+  progress: number,
+  interpolation: Exclude<Frame["lightingInterpolation"], "hold" | undefined>
+): number {
+  if (interpolation === "ease-in") return progress * progress;
+  if (interpolation === "ease-out") return 1 - ((1 - progress) * (1 - progress));
+  if (interpolation === "ease-in-out") {
+    return progress < 0.5
+      ? 2 * progress * progress
+      : 1 - ((-2 * progress + 2) ** 2) / 2;
+  }
+  return progress;
+}
+
+function interpolateFrameLighting(
+  from: FrameLighting,
+  to: FrameLighting,
+  progress: number
+): FrameLighting {
+  const resolvedFrom = resolvedLighting(from);
+  const resolvedTo = resolvedLighting(to);
+  const mix = (start: number, end: number) => start + (end - start) * progress;
+  return {
+    x: mix(resolvedFrom.x, resolvedTo.x),
+    y: mix(resolvedFrom.y, resolvedTo.y),
+    height: mix(resolvedFrom.height, resolvedTo.height),
+    intensity: mix(resolvedFrom.intensity, resolvedTo.intensity),
+    ambient: mix(resolvedFrom.ambient, resolvedTo.ambient),
+    shading: resolvedFrom.shading,
+    toonSteps: resolvedFrom.toonSteps
+  };
+}
+
+function resolvedLighting(lighting: FrameLighting): FrameLighting & {
+  shading: NonNullable<FrameLighting["shading"]>;
+  toonSteps: number;
+} {
+  return { ...DEFAULT_FRAME_LIGHTING, ...lighting };
 }
 
 interface LegacyPixelDocumentV0 {
@@ -66,7 +180,7 @@ export function createPixelDocument(options: {
     canvas: { width: options.width, height: options.height },
     palette,
     transparentColorIndex: 0,
-    frames: [{ id: "frame-1", name: "Frame 1", durationMs: 100 }],
+    frames: [{ id: "frame-1", name: "Frame 1", durationMs: 100, lighting: { ...DEFAULT_FRAME_LIGHTING } }],
     layers: [
       {
         id: "artwork",
@@ -156,6 +270,14 @@ export function validatePixelDocument(input: unknown): ValidationResult {
   if (regionIds.size !== document.regions.length) {
     issues.push({ path: "/regions", message: "Region IDs must be unique." });
   }
+  for (const [frameIndex, frame] of document.frames.entries()) {
+    if (frame.lightingInterpolation && !frame.lighting) {
+      issues.push({
+        path: `/frames/${frameIndex}/lightingInterpolation`,
+        message: "Only a lighting keyframe can define interpolation."
+      });
+    }
+  }
   if (document.transparentColorIndex >= document.palette.length) {
     issues.push({
       path: "/transparentColorIndex",
@@ -193,6 +315,32 @@ export function validatePixelDocument(input: unknown): ValidationResult {
           path: `/layers/${layerIndex}/frames/${frameId}`,
           message: "Layer references an unknown frame."
         });
+      }
+    }
+    if (layer.normalFrames) {
+      for (const frameId of frameIds) {
+        const normals = layer.normalFrames[frameId];
+        if (!normals) {
+          issues.push({
+            path: `/layers/${layerIndex}/normalFrames/${frameId}`,
+            message: "Every normal map must contain pixels for every frame."
+          });
+          continue;
+        }
+        if (normals.length !== expectedPixelCount) {
+          issues.push({
+            path: `/layers/${layerIndex}/normalFrames/${frameId}`,
+            message: `Expected ${expectedPixelCount} normal pixels, received ${normals.length}.`
+          });
+        }
+      }
+      for (const frameId of Object.keys(layer.normalFrames)) {
+        if (!frameIds.has(frameId)) {
+          issues.push({
+            path: `/layers/${layerIndex}/normalFrames/${frameId}`,
+            message: "Normal map references an unknown frame."
+          });
+        }
       }
     }
   }

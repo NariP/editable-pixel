@@ -1,40 +1,59 @@
 ---
 name: editable-pixel
-description: Convert AI-generated PNG, WebP, or JPEG artwork into editable logical pixel assets, open the local review editor, make selection-bounded edits with Codex or Claude, and validate, render, or export Pixel Documents. Use for AI pixel-asset workflows, not general raster painting.
+description: Inspect and edit Editable Pixel Project or Pixel Document sessions with Codex or Claude. Use for natural-language pixel, palette, layer, frame, clip, normal-map, lighting, conversion, motion, validation, rendering, and export work on AI-generated pixel assets.
 ---
 
 # Editable Pixel
 
-Use the installed `editable-pixel` CLI for file workflows and the `editable-pixel` MCP server for live browser sessions. Never reimplement the Pixel Document schema or patch math in ad-hoc scripts.
+Use the installed `editable-pixel` CLI for files and session startup. Use the `editable-pixel` MCP server for a live Project shared with the web editor. Never recreate document schemas, coordinate transforms, or patch math in ad-hoc scripts.
 
 ## Route the request
 
-- `convert`: run `editable-pixel convert` for one image or a batch. A batch shares palette, canvas, content box, and pivot.
-- `open`: run the host-specific flow in [references/hosts.md](references/hosts.md).
-- `edit`: use MCP for a live selected area. Read [references/live-editing.md](references/live-editing.md).
-- `validate`, `render`, `export`: use the corresponding CLI command; these work without MCP or Web.
+- Live inspection or editing: follow [references/live-editing.md](references/live-editing.md).
+- Connected-browser state, Project, import, conversion, playback, or export: follow [references/web-workflows.md](references/web-workflows.md).
+- Offline convert, validate, render, or bundle export: follow [references/cli.md](references/cli.md).
+- Register MCP or open the correct browser host: follow [references/hosts.md](references/hosts.md).
 
-Read [references/cli.md](references/cli.md) only when composing non-live commands or diagnosing a CLI error.
+## Live workflow
 
-## Non-negotiable edit boundary
+1. Call `list_sessions` only when the session ID is unknown.
+2. Call `get_metadata` to discover Project, Clip, Frame, Layer, canvas, selection, and revision.
+3. Call only the smallest required context tool:
+   - pixels or normals: `get_design_context`
+   - color usage: `get_palette_context`
+   - timing or lighting: `get_motion_context`
+   - visual semantics or QA: `get_screenshot`
+   - active web tab/tool/Source/Project/conversion/playback state: `get_web_context`
+4. If the target is not already selected, call `set_selection`. Use the existing selection when it already matches.
+5. Call `use_editable_pixel` once per meaningful edit. It applies immediately and records actor=`ai`.
+6. Re-read focused context only when needed. Use `get_history` or `undo` to inspect or revert.
 
-For conversational edits, the user chooses the rectangle in the web editor. Do not infer, enlarge, or move that selection on their behalf.
+Use `control_web` for browser-only state and Project workflows, `import_files` for validated local inputs, and `export_web` for the same download options exposed by the header Export UI. Do not automate DOM clicks when a semantic MCP action exists.
 
-Before changing pixels:
+Do not require a preview approval. Preview and Screenshot are optional QA tools. Never bypass revision, schema, target, or selection validation.
 
-1. Identify the active session and current revision.
-2. Read the current selection. If absent, ask the user to click `[SELECT AREA]` and drag a rectangle.
-3. Create a patch whose every coordinate stays inside that selection.
-4. Preview it in the web editor.
-5. Apply only after the user approves the preview; otherwise reject it.
-6. Re-read the session and validate the resulting document.
+## Context budget
 
-Never bypass a stale-revision conflict. Refresh the session, recreate the patch, and preview again.
+- Prefer `get_metadata` over a full Project or Document dump.
+- Prefer the active selection. Otherwise pass explicit bounds or rely on content bounds.
+- Start with padding 1; increase only when edge continuity needs more context.
+- Request normals only for normal-map tasks.
+- Use screenshots to identify semantic regions; use design context for exact coordinates and palette indices.
+- Report changed action, target, revision, and bounds. Do not print full pixel arrays unless requested.
 
-## Safety and output
+## Editing policy
 
-- Keep source images and tokens out of logs and chat output.
-- Do not overwrite conversion or export files. Choose a new output path when `OUTPUT_EXISTS` is returned.
-- Do not use external background-removal services. `local-removal` must be explicitly available; otherwise choose alpha or solid removal with the user.
-- Treat `.pixel.json` as the editable source of truth and PNGs as rendered outputs.
-- Report the session ID, revision, changed bounds, and output paths; do not dump full pixel arrays unless requested.
+- AI and the user share `document.selection`, session History, Undo, Redo, revision, and autosave.
+- Project/Clip actions and AI-driven imports are synchronized back into the visible browser Project model; do not edit Project JSON behind the session.
+- Treat one user intent as one `use_editable_pixel` transaction when the action schema supports it.
+- Use `set_selection` for rectangle, pixel mask, color, connected component, outline, or content bounds selection.
+- Keep exact pixel edits selection-bounded unless the user clearly requested a document-wide palette or structure action.
+- Use the supplied reason as a concise History label.
+- On conflict, refresh metadata/context and recreate the action against the current state.
+
+## Safety
+
+- Keep source data and session tokens out of logs and chat.
+- Never overwrite export files; choose a fresh filename after `OUTPUT_EXISTS`.
+- Use only loopback sessions and the installed MCP transport.
+- Treat Project/Pixel JSON as editable data and PNG/GIF/Sprite Sheet as outputs.

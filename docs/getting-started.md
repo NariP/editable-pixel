@@ -1,17 +1,23 @@
 # Getting started
 
-Editable Pixel converts AI-generated raster images into Pixel Documents and lets a browser editor and coding agent share one local editing session.
+Editable Pixel stores complete work in a Pixel Project and uses Pixel Document JSON as the exchange boundary for its one editable canvas. The local browser editor, CLI, and coding-agent session operate on the same active Project context.
 
 ## Install
 
-After a tagged release is published:
+With the install script on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
+```
+
+Or with npm:
 
 ```bash
 npm install --global editable-pixel
 editable-pixel --version
 ```
 
-To run the current source checkout:
+From this repository:
 
 ```bash
 corepack enable
@@ -22,22 +28,60 @@ node packages/pixel-cli/dist/cli.js --help
 
 Node.js 20.9 or newer is required.
 
-## Convert one image
+## Start the local editor
+
+Open a valid source-less Project immediately:
 
 ```bash
-editable-pixel convert ./hero.png \
-  --size 32 \
-  --colors 16 \
+editable-pixel open
+```
+
+The CLI starts the loopback server and opens a local browser session. No hosted web service receives the Project or source images.
+
+To create a named Project file first:
+
+Create a valid source-less Project:
+
+```bash
+editable-pixel project create "Robot Pack" \
+  --size 64 \
+  --output ./robot-pack.pixel-project.json
+```
+
+Then open it in the local editor:
+
+```bash
+editable-pixel open ./robot-pack.pixel-project.json
+```
+
+The Project menu creates, opens, and reopens recent Projects. There is no manual Save button: meaningful edits autosave as Project revisions. Save As clones the whole Project under a new name and ID.
+
+## Import in the browser
+
+Use the header Import button, paste an image, or drop files onto the editor. Choose one explicit purpose:
+
+- `Replace Canvas`: replace the Project's editable canvas with the imported result.
+- `Add as Frames`: normalize ordered images into the active Clip.
+- `Import Sprite Sheet`: split one image by columns and rows, left-to-right then top-to-bottom.
+- `Add Source`: retain input only for comparison or reconversion.
+- `Replace Source`: replace the selected retained input without replacing edited pixels.
+
+The number of files never silently determines ownership. Added Frames and Sprite Sheet tiles are normalized to the Project canvas.
+
+## Convert one image from the CLI
+
+```bash
+editable-pixel convert ./robot.png \
+  --size 64 \
+  --colors 18 \
   --alignment bottom-center \
   --content-scale 0.8 \
   --dithering none \
   --background alpha \
-  --output ./hero.pixel.json
+  --output ./robot.pixel.json
 ```
 
-The output is refused if the destination already exists. This prevents an accidental overwrite; choose a new path or explicitly remove the old generated output.
-
-For a non-square target or a palette shared with an existing asset set:
+For a rectangular target or fixed palette:
 
 ```bash
 editable-pixel convert ./portrait.png \
@@ -46,69 +90,55 @@ editable-pixel convert ./portrait.png \
   --output ./portrait.pixel.json
 ```
 
-`--width` and `--height` override the square `--size` default. A fixed palette takes precedence over `--colors`.
-
-For an opaque single-color background, use `--background solid`. The converter uses the image's corner color as the background reference. `local-removal` requires an explicitly configured local adapter in the library API and fails clearly when none is available.
-
-## Normalize a batch
+The CLI refuses to overwrite an existing output. Replace a Project canvas without changing the input Project file:
 
 ```bash
-editable-pixel convert ./walk-1.png ./walk-2.webp ./walk-3.jpg \
-  --size 64 \
-  --colors 24 \
-  --alignment bottom-center \
-  --output ./normalized
+editable-pixel project import-document \
+  ./robot-pack.pixel-project.json ./robot.pixel.json \
+  --output ./robot-pack-with-robot.pixel-project.json
 ```
 
-All inputs share the generated palette, canvas, content box, and pivot. Each result is written as `<input-name>.pixel.json`.
+## Edit and animate
 
-## Open the editor
+The Inspector has `Convert`, `Edit`, and `Frames` tabs.
 
-```bash
-editable-pixel open ./hero.pixel.json
-```
+- Convert controls canvas normalization, palette, background, dithering, and Content Frame.
+- Edit controls Color/Normal/Lit views, palette operations, and Layers.
+- Frames controls Clips, onion skin, Frame order, duration, and playback.
 
-The command starts or reuses the loopback session server and opens the browser. The editor shows the document revision, connection state, logical canvas, active layer/frame, and selection.
-
-To make a conversational edit:
-
-1. Click `[ SELECT AREA ]`.
-2. Drag a rectangle over the exact pixels the agent may change.
-3. Ask Codex or Claude for the change.
-4. Review the before/after patch in the right-hand panel.
-5. Apply or reject it.
-
-Selection coordinates synchronize automatically. No edit starts merely because a selection changed.
+The floating toolbar provides Pen, Eraser, Fill, and Select. Canvas, Layers, and Frames maintain distinct keyboard targets, so copy/paste and Delete act on the focused surface. Temporary network loss keeps browser pixel edits visible and queued; reconnect flushes them or exposes a conflict.
 
 ## Connect an agent
 
 ```bash
-# Codex
-codex mcp add editable-pixel -- editable-pixel-mcp
-
-# Claude Code
-claude mcp add --scope project editable-pixel -- editable-pixel-mcp
+# Install the bundled Skill and auto-register its MCP in both hosts
+editable-pixel install-skill --host both
 ```
 
-For Codex's in-app browser, create a session with:
+For Codex's in-app browser:
 
 ```bash
-editable-pixel --json open ./hero.pixel.json --host codex
+editable-pixel --json open ./robot-pack.pixel-project.json --host codex
 ```
 
-The JSON includes a one-time `launchUrl`. Open it in the Codex browser without copying it into chat or logs. The browser removes the bootstrap secret after exchanging it for a session token. If no in-app browser is available, use the normal `browser` host.
+The JSON includes a one-time `launchUrl`. Open it without copying it into chat or logs. The browser exchanges the bootstrap secret for a session token and removes it from the URL. Claude uses `--host claude` to open the same workflow in the system browser.
 
-For Claude Code, use `--host claude`; the editor opens in the system browser while Claude communicates with the same session through MCP.
+The agent first reads sparse metadata, then requests only the required Selection or bounds. It may set the canonical Canvas Selection itself and immediately apply a validated `use_editable_pixel` action. For connected-browser state and workflows it reads `get_web_context`, uses `control_web` instead of DOM clicks, imports validated absolute local paths with `import_files`, and triggers the same Export choices with `export_web`. The same Selection overlay, History, Undo, Redo, revision, Project state, and autosave are used by the browser and the agent. Use screenshots for visual understanding or QA, not as a mandatory approval step.
 
 ## Validate, render, and export
 
 ```bash
-editable-pixel validate ./hero.pixel.json
-editable-pixel render ./hero.pixel.json --output ./hero.png
-editable-pixel render ./hero.pixel.json --scale 8 --output ./hero@8x.png
-editable-pixel export ./hero.pixel.json --output ./hero-export
+editable-pixel validate ./robot-pack.pixel-project.json
+editable-pixel render ./robot-pack.pixel-project.json \
+  --format color --scale 4 --output ./robot.png
+editable-pixel render ./robot-pack.pixel-project.json \
+  --format normal --output ./robot-normal.png
+editable-pixel render ./robot-pack.pixel-project.json \
+  --format lit --output ./robot-lit.png
+editable-pixel export ./robot-pack.pixel-project.json \
+  --output ./robot-export
 ```
 
-The export directory contains the canonical document copy, logical and enlarged PNGs, layer and frame images, and a sprite sheet with JSON metadata.
+The web Export popover additionally supports Current Frame, Current Clip, and Entire Project scopes, plus nearest-neighbor scale, GIF animation, and complete Project JSON.
 
-Continue with the [CLI reference](./cli.md), [MCP guide](./mcp.md), and [Pixel Document reference](./pixel-document.md).
+Continue with the [CLI reference](./cli.md), [MCP guide](./mcp.md), [Project model](./project-model.md), and [Pixel Document reference](./pixel-document.md).

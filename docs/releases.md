@@ -7,7 +7,7 @@ Editable Pixel uses one version for the CLI, built web editor, local server, MCP
 The release workflow:
 
 1. installs the locked pnpm dependencies on the supported Node.js version;
-2. runs build, lint, type-check, unit/integration, browser E2E, and clean-package installation tests;
+2. runs build, lint, type-check, unit/integration, browser E2E, packaged-distribution, and clean source-checkout installation tests;
 3. packs the `editable-pixel` npm tarball;
 4. archives the `skills/editable-pixel` directory;
 5. writes SHA-256 checksums for both assets;
@@ -20,7 +20,7 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 1. Update the package version and user-facing compatibility notes.
 2. Confirm the release notes state the supported Pixel Document version (`1`).
-3. Run `pnpm verify`, `pnpm test:e2e`, and `pnpm test:distribution` locally.
+3. Run `pnpm verify`, `pnpm test:e2e`, `pnpm test:distribution`, and `pnpm test:source-install` locally.
 4. Confirm `npm pack --dry-run` contains the three executables, `web/index.html`, README files, and license.
 5. Create and push an annotated `vX.Y.Z` tag.
 6. Verify the GitHub Release checksums and install the uploaded tarball in a clean temporary prefix.

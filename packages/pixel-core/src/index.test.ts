@@ -17,11 +17,14 @@ import {
   duplicateLayer,
   erasePixel,
   fill,
+  fillNormal,
   flipSelection,
+  getNormalPixels,
   getPixels,
   mergePaletteColors,
   moveSelection,
   pasteLayer,
+  removeFrameLightingKeyframe,
   removeFrame,
   removeLayer,
   removePaletteColor,
@@ -34,7 +37,10 @@ import {
   replaceColor,
   resizeCanvas,
   resizeContent,
+  setNormalPixel,
   setFrameDuration,
+  setFrameLighting,
+  setFrameLightingInterpolation,
   setLayerVisibility,
   setLayerOpacity,
   setPixel,
@@ -165,6 +171,37 @@ describe("Pixel Core", () => {
 
     expect(getPixels(undone, "artwork", "frame-1")[0]).toBe(0);
     expect(getPixels(redone, "artwork", "frame-1")[0]).toBe(1);
+  });
+
+  it("paints, fills, and restores normal-map pixels through history", () => {
+    const history = new PatchHistory();
+    const document = createPixelDocument({ width: 2, height: 1, pixels: [1, 1] });
+    const painted = history.apply(
+      document,
+      setNormalPixel(document, "artwork", "frame-1", 0, 0, 0xff80b5)
+    );
+    const filled = history.apply(
+      painted,
+      fillNormal(painted, "artwork", "frame-1", 1, 0, 0x80ffb5)
+    );
+    const undone = history.undo(filled);
+    const redone = history.redo(undone);
+
+    expect(getNormalPixels(painted, "artwork", "frame-1")).toEqual([0xff80b5, 0x8080ff]);
+    expect(getNormalPixels(filled, "artwork", "frame-1")).toEqual([0xff80b5, 0x80ffb5]);
+    expect(getNormalPixels(undone, "artwork", "frame-1")).toEqual([0xff80b5, 0x8080ff]);
+    expect(getNormalPixels(redone, "artwork", "frame-1")).toEqual([0xff80b5, 0x80ffb5]);
+  });
+
+  it("keeps normal maps aligned when frames are duplicated and removed", () => {
+    const document = createPixelDocument({ width: 1, height: 1, pixels: [1] });
+    const painted = applyPatch(document, setNormalPixel(document, "artwork", "frame-1", 0, 0, 0xff80b5));
+    const duplicated = applyPatch(painted, duplicateFrame(painted, "frame-1"));
+    const duplicateId = duplicated.frames[1]!.id;
+
+    expect(getNormalPixels(duplicated, "artwork", duplicateId)).toEqual([0xff80b5]);
+    const removed = applyPatch(duplicated, removeFrame(duplicated, "frame-1"));
+    expect(removed.layers[0]!.normalFrames).toEqual({ [duplicateId]: [0xff80b5] });
   });
 
   it("models layer and frame changes as document patches", () => {
@@ -332,6 +369,41 @@ describe("Pixel Core", () => {
     expect(withoutSecond.frames.map((frame) => frame.id)).toEqual(["frame-1", copyFrameId]);
     expect(withoutSecond.frames[1]!.name).toBe("Blink");
     expect(withoutSecond.frames[1]!.durationMs).toBe(250);
+  });
+
+  it("creates a frame with explicitly inherited lighting", () => {
+    const document = createPixelDocument({ width: 2, height: 2 });
+    const lighting = { x: 0.75, y: 0.4, height: 0.3, intensity: 1.2, ambient: 0.1 };
+    const next = applyPatch(document, addFrame(document, "Inherited", 180, lighting));
+
+    expect(next.frames[1]).toMatchObject({ durationMs: 180, lighting });
+    expect(next.frames[1]!.lighting).not.toBe(lighting);
+  });
+
+  it("updates one frame lighting without changing another frame", () => {
+    const document = createPixelDocument({ width: 2, height: 2 });
+    const withFrame = applyPatch(document, addFrame(document, "Second"));
+    const lighting = { x: 0.9, y: 0.8, height: 1.2, intensity: 1.4, ambient: 0.15 };
+    const next = applyPatch(withFrame, setFrameLighting(withFrame, "frame-1", lighting));
+
+    expect(next.frames[0]!.lighting).toEqual(lighting);
+    expect(next.frames[1]!.lighting).toEqual(document.frames[0]!.lighting);
+  });
+
+  it("sets and removes a lighting keyframe without leaving a clip empty", () => {
+    const document = createPixelDocument({ width: 2, height: 2 });
+    const withFrame = applyPatch(document, addFrame(document, "Second"));
+    const linear = applyPatch(withFrame, setFrameLightingInterpolation(withFrame, "frame-1", "linear"));
+    const withoutSecondKeyframe = applyPatch(
+      linear,
+      removeFrameLightingKeyframe(linear, linear.frames[1]!.id, linear.frames.map((frame) => frame.id))
+    );
+
+    expect(linear.frames[0]!.lightingInterpolation).toBe("linear");
+    expect(withoutSecondKeyframe.frames[1]!.lighting).toBeUndefined();
+    expect(() => removeFrameLightingKeyframe(withoutSecondKeyframe, "frame-1")).toThrow(
+      "A clip must keep at least one lighting keyframe."
+    );
   });
 
   it("pastes a copied layer snapshot after its source is removed", () => {

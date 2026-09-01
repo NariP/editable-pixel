@@ -4,6 +4,7 @@ import {
   createPixelDocument,
   migratePixelDocument,
   parsePixelDocument,
+  resolveFrameLighting,
   serializePixelDocument,
   validatePixelDocument
 } from "./index.js";
@@ -20,6 +21,20 @@ describe("Pixel Document", () => {
     expect(parsePixelDocument(serializePixelDocument(document))).toEqual(document);
   });
 
+  it("round-trips optional per-frame normal maps and validates their size", () => {
+    const document = createPixelDocument({ width: 2, height: 1, pixels: [1, 0] });
+    document.layers[0]!.normalFrames = { "frame-1": [0x8080ff, 0xff80b5] };
+
+    expect(parsePixelDocument(serializePixelDocument(document))).toEqual(document);
+    expect(validatePixelDocument(document)).toEqual({ valid: true, issues: [] });
+
+    document.layers[0]!.normalFrames["frame-1"] = [0x8080ff];
+    expect(validatePixelDocument(document).issues).toContainEqual({
+      path: "/layers/0/normalFrames/frame-1",
+      message: "Expected 2 normal pixels, received 1."
+    });
+  });
+
   it("creates deterministic identifiers and serialization", () => {
     const input = {
       width: 2,
@@ -33,6 +48,94 @@ describe("Pixel Document", () => {
 
     expect(first.id).toBe(second.id);
     expect(serializePixelDocument(first, false)).toBe(serializePixelDocument(second, false));
+  });
+
+  it("resolves Hold lighting from the previous keyframe", () => {
+    const document = createPixelDocument({ width: 1, height: 1 });
+    const start = { ...document.frames[0]!.lighting!, intensity: 0.2 };
+    document.frames = [
+      { id: "a", name: "Frame 1", durationMs: 100, lighting: start, lightingInterpolation: "hold" },
+      { id: "b", name: "Frame 2", durationMs: 300 },
+      { id: "c", name: "Frame 3", durationMs: 100, lighting: { ...start, intensity: 1 } }
+    ];
+
+    expect(resolveFrameLighting(document, ["a", "b", "c"], "b")).toEqual(start);
+  });
+
+  it("resolves Linear lighting from cumulative frame duration", () => {
+    const document = createPixelDocument({ width: 1, height: 1 });
+    const start = { x: 0, y: 0, height: 1, intensity: 0, ambient: 0 };
+    const end = { x: 1, y: 1, height: 2, intensity: 1, ambient: 1 };
+    document.frames = [
+      { id: "a", name: "Frame 1", durationMs: 100, lighting: start, lightingInterpolation: "linear" },
+      { id: "b", name: "Frame 2", durationMs: 300 },
+      { id: "c", name: "Frame 3", durationMs: 100, lighting: end }
+    ];
+
+    expect(resolveFrameLighting(document, ["a", "b", "c"], "b")).toEqual({
+      x: 0.25,
+      y: 0.25,
+      height: 1.25,
+      intensity: 0.25,
+      ambient: 0.25,
+      shading: "toon-palette",
+      toonSteps: 4
+    });
+    expect(resolveFrameLighting(document, ["b", "c"], "b")).toEqual({
+      ...end,
+      shading: "toon-palette",
+      toonSteps: 4
+    });
+  });
+
+  it.each([
+    ["ease-in", 0.0625],
+    ["ease-out", 0.4375],
+    ["ease-in-out", 0.125]
+  ] as const)("resolves %s lighting from eased frame progress", (interpolation, expected) => {
+    const document = createPixelDocument({ width: 1, height: 1 });
+    const start = { x: 0, y: 0, height: 1, intensity: 0, ambient: 0 };
+    const end = { x: 1, y: 1, height: 2, intensity: 1, ambient: 1 };
+    document.frames = [
+      { id: "a", name: "Frame 1", durationMs: 100, lighting: start, lightingInterpolation: interpolation },
+      { id: "b", name: "Frame 2", durationMs: 300 },
+      { id: "c", name: "Frame 3", durationMs: 100, lighting: end }
+    ];
+
+    expect(resolveFrameLighting(document, ["a", "b", "c"], "b")).toEqual({
+      x: expected,
+      y: expected,
+      height: 1 + expected,
+      intensity: expected,
+      ambient: expected,
+      shading: "toon-palette",
+      toonSteps: 4
+    });
+  });
+
+  it("keeps discrete Toon palette settings from the previous lighting keyframe", () => {
+    const document = createPixelDocument({ width: 1, height: 1 });
+    document.frames = [
+      { id: "a", name: "Frame 1", durationMs: 100, lighting: { ...document.frames[0]!.lighting!, shading: "toon-palette", toonSteps: 3 }, lightingInterpolation: "linear" },
+      { id: "b", name: "Frame 2", durationMs: 100 },
+      { id: "c", name: "Frame 3", durationMs: 100, lighting: { ...document.frames[0]!.lighting!, shading: "smooth", toonSteps: 6 } }
+    ];
+
+    expect(resolveFrameLighting(document, ["a", "b", "c"], "b")).toMatchObject({
+      shading: "toon-palette",
+      toonSteps: 3
+    });
+  });
+
+  it("rejects interpolation metadata on a non-keyframe", () => {
+    const document = createPixelDocument({ width: 1, height: 1 });
+    delete document.frames[0]!.lighting;
+    document.frames[0]!.lightingInterpolation = "linear";
+
+    expect(validatePixelDocument(document).issues).toContainEqual({
+      path: "/frames/0/lightingInterpolation",
+      message: "Only a lighting keyframe can define interpolation."
+    });
   });
 
   it("keeps readable and compact serialization semantically identical", () => {

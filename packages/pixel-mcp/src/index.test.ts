@@ -20,8 +20,21 @@ describe("Editable Pixel MCP", () => {
     expect(listed.tools.map((tool) => tool.name)).toEqual([
       "list_sessions",
       "get_session",
+      "get_metadata",
+      "get_design_context",
+      "get_palette_context",
+      "get_motion_context",
+      "get_history",
+      "set_selection",
+      "use_editable_pixel",
+      "get_web_context",
+      "control_web",
+      "import_files",
+      "export_web",
+      "get_project_context",
       "get_document_summary",
       "get_selection",
+      "get_selection_context",
       "create_patch",
       "preview_patch",
       "apply_patch",
@@ -29,7 +42,9 @@ describe("Editable Pixel MCP", () => {
       "undo",
       "redo",
       "validate_document",
-      "render_preview"
+      "render_preview",
+      "get_screenshot",
+      "export_frame"
     ]);
     expect(listed.tools.every((tool) => Boolean(tool.description && tool.annotations))).toBe(true);
     await harness.close();
@@ -89,6 +104,54 @@ describe("Editable Pixel MCP", () => {
 
     expect(harness.server.store.get(harness.sessionId).revision).toBe(2);
     expect(rendered.content.some((item) => item.type === "image")).toBe(true);
+    const context = await harness.mcpClient.callTool({
+      name: "get_selection_context",
+      arguments: { session_id: harness.sessionId, padding: 0, response_format: "json" }
+    }) as CallToolResult;
+    expect(context.isError).not.toBe(true);
+    await harness.close();
+  });
+
+  it("sets the browser selection and immediately records an AI edit in unified history", async () => {
+    const harness = await createHarness();
+    const selected = await harness.mcpClient.callTool({
+      name: "set_selection",
+      arguments: {
+        session_id: harness.sessionId,
+        command: { type: "rect", x: 1, y: 1, width: 1, height: 1, mode: "replace" },
+        response_format: "json"
+      }
+    }) as CallToolResult;
+    expect(selected.isError).not.toBe(true);
+    expect(harness.server.store.get(harness.sessionId).selection).toMatchObject({ x: 1, y: 1 });
+
+    const edited = await harness.mcpClient.callTool({
+      name: "use_editable_pixel",
+      arguments: {
+        session_id: harness.sessionId,
+        reason: "Paint the selected accent",
+        action: { type: "paint_selection", color_index: 1 },
+        response_format: "json"
+      }
+    }) as CallToolResult;
+    expect(edited.isError).not.toBe(true);
+    expect(harness.server.store.get(harness.sessionId).document.layers[0]!.frames["frame-1"]![3]).toBe(1);
+
+    const history = await harness.mcpClient.callTool({
+      name: "get_history",
+      arguments: { session_id: harness.sessionId, response_format: "json" }
+    }) as CallToolResult;
+    const entries = (history.structuredContent as {
+      data: { entries: Array<{ actor: string; reason: string }> }
+    }).data.entries;
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: "ai", reason: "Paint the selected accent" })
+    ]));
+    await harness.mcpClient.callTool({
+      name: "undo",
+      arguments: { session_id: harness.sessionId }
+    });
+    expect(harness.server.store.get(harness.sessionId).document.layers[0]!.frames["frame-1"]![3]).toBe(0);
     await harness.close();
   });
 });
