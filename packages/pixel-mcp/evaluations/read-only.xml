@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>In the only session opened from character.pixel.json, identify the document through sparse metadata and confirm its canvas structure. What is the document ID? Answer with the ID only.</question>
+    <answer>evaluation-fixture</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the character.pixel.json session, use structural metadata rather than a full document dump. How many animation Frames does the document contain? Answer with one integer.</question>
+    <answer>8</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Inspect the motion context for the character.pixel.json session and sum the duration of every ordered Frame in its single motion sequence. What is the total in milliseconds? Answer with one integer.</question>
+    <answer>1020</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Among all Frames in the character.pixel.json motion context, find the one with the shortest duration. What is its human-readable Frame name? Answer with the name only.</question>
+    <answer>Frame 4</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Use metadata to identify the active Layer and Frame in character.pixel.json, then inspect palette usage. Which non-transparent palette index has the highest exact pixel count on that target? Answer with one integer.</question>
+    <answer>13</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>After finding the most-used non-transparent palette entry on the active target of character.pixel.json, report its eight-digit RGBA value exactly as returned. Answer with the color only.</question>
+    <answer>#fd7001ff</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Inspect exact palette usage on the active Layer and Frame of character.pixel.json. How many palette entries, including neither assumptions nor inferred colors, have zero used pixels? Answer with one integer.</question>
+    <answer>1</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>For the active target in character.pixel.json, use palette usage counts to calculate how many pixels are not the declared transparent palette index. Answer with one integer.</question>
+    <answer>278</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Read the sparse content bounds for character.pixel.json and calculate its rectangular area in logical pixels. What is the area? Answer with one integer.</question>
+    <answer>598</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Use sparse metadata to locate the active target in character.pixel.json, then request only a one-pixel design context at logical coordinate x=16, y=20 with no padding. What palette index is stored there? Answer with one integer.</question>
+    <answer>4</answer>
+  </qa_pair>
+</evaluation>

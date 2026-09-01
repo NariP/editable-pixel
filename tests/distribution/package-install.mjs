@@ -11,6 +11,7 @@ const packDirectory = join(temporary, "pack");
 const prefix = join(temporary, "install");
 const registry = join(temporary, "registry.json");
 const fixture = resolve("tests/fixtures/character.pixel.json");
+const installer = resolve("install.sh");
 const environment = { ...process.env, EDITABLE_PIXEL_REGISTRY: registry };
 let daemonPid;
 
@@ -28,7 +29,15 @@ try {
     "package/dist/server-runner.js",
     "package/dist/mcp.js",
     "package/web/index.html",
+    "package/skills/editable-pixel/SKILL.md",
+    "package/skills/editable-pixel/references/live-editing.md",
+    "package/docs/media/editor-overview.png",
+    "package/docs/media/robot-motion-64.gif",
+    "package/docs/project-model.md",
+    "package/docs/mcp.md",
+    "package/install.sh",
     "package/README.md",
+    "package/CONTRIBUTING.md",
     "package/LICENSE"
   ]) {
     if (!listing.includes(required)) throw new Error(`Package is missing ${required}.`);
@@ -36,9 +45,10 @@ try {
   const checksum = createHash("sha256").update(await readFile(archive)).digest("hex");
   if (!/^[0-9a-f]{64}$/.test(checksum)) throw new Error("Package checksum was not generated.");
 
-  await install(archive);
-  await install(archive);
-  const binaryDirectory = join(prefix, "node_modules", ".bin");
+  const installEnvironment = { ...environment, EDITABLE_PIXEL_PACKAGE_SPEC: archive };
+  await execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
+  await execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
+  const binaryDirectory = join(prefix, "bin");
   const cli = join(binaryDirectory, "editable-pixel");
   const mcp = join(binaryDirectory, "editable-pixel-mcp");
   const server = join(binaryDirectory, "editable-pixel-server");
@@ -46,6 +56,14 @@ try {
 
   const version = (await execFile(cli, ["--version"], { env: environment })).stdout.trim();
   if (version !== "1.0.0") throw new Error(`Unexpected installed version: ${version}`);
+  const skillRoot = join(temporary, "skills");
+  const installedSkill = JSON.parse((await execFile(
+    cli,
+    ["--json", "install-skill", "--host", "codex", "--target", skillRoot],
+    { env: environment }
+  )).stdout);
+  if (!installedSkill.outputs?.[0]) throw new Error("Installed CLI did not report the skill path.");
+  await access(join(skillRoot, "editable-pixel", "SKILL.md"));
   await execFile(cli, ["--json", "validate", fixture], { env: environment });
   const [openedOutput, concurrentOutput] = await Promise.all([
     execFile(cli, ["--json", "open", fixture, "--host", "codex", "--no-browser"], { env: environment }),
@@ -57,6 +75,12 @@ try {
     throw new Error("Installed CLI did not open concurrent isolated sessions on the shared daemon.");
   }
   if (opened.sessionId === concurrent.sessionId) throw new Error("Concurrent open calls reused the same session.");
+  const blank = JSON.parse((await execFile(
+    cli,
+    ["--json", "open", "--host", "browser", "--no-browser"],
+    { cwd: temporary, env: environment }
+  )).stdout);
+  if (!blank.sessionId || !blank.url) throw new Error("Installed CLI did not open a source-less local editor session.");
 
   const daemon = JSON.parse(await readFile(registry, "utf8"));
   daemonPid = daemon.pid;
@@ -66,8 +90,9 @@ try {
   mcpProcess.kill("SIGTERM");
   await execFile(cli, ["session", "close", opened.sessionId], { env: environment });
   await execFile(cli, ["session", "close", concurrent.sessionId], { env: environment });
+  await execFile(cli, ["session", "close", blank.sessionId], { env: environment });
 
-  await execFile("npm", ["uninstall", "--prefix", prefix, "--no-package-lock", "editable-pixel"], { env: environment });
+  await execFile("sh", [installer, "--uninstall", "--prefix", prefix], { env: environment });
   try {
     await access(cli);
     throw new Error("CLI binary remained after uninstall.");
@@ -81,8 +106,4 @@ try {
     try { process.kill(daemonPid, "SIGTERM"); } catch { /* already stopped */ }
   }
   await rm(temporary, { recursive: true, force: true });
-}
-
-async function install(archive) {
-  await execFile("npm", ["install", "--prefix", prefix, "--no-package-lock", archive], { env: environment });
 }

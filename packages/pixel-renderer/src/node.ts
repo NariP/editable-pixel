@@ -1,15 +1,49 @@
 import type { PixelDocument } from "@editable-pixel/document";
 import sharp from "sharp";
 
-import { renderRgba, type RenderOptions } from "./index.js";
+import { renderLitRgba, renderNormalRgba, renderRgba, type LightSettings, type RenderOptions, type RenderedRgba } from "./index.js";
 
 export async function renderPng(document: PixelDocument, options: RenderOptions = {}): Promise<Buffer> {
-  const rendered = renderRgba(document, options);
-  return sharp(Buffer.from(rendered.data), {
+  return encodePng(renderRgba(document, options));
+}
+
+export async function renderNormalPng(document: PixelDocument, options: RenderOptions = {}): Promise<Buffer> {
+  return encodePng(renderNormalRgba(document, options));
+}
+
+export async function renderNormalPreviewPng(
+  document: PixelDocument,
+  scale = 8,
+  options: RenderOptions = {}
+): Promise<Buffer> {
+  assertScale(scale);
+  return encodePng(renderNormalRgba(document, options), scale);
+}
+
+export async function renderLitPng(
+  document: PixelDocument,
+  light: LightSettings,
+  options: RenderOptions = {}
+): Promise<Buffer> {
+  return encodePng(renderLitRgba(document, light, options));
+}
+
+export async function renderLitPreviewPng(
+  document: PixelDocument,
+  light: LightSettings,
+  scale = 8,
+  options: RenderOptions = {}
+): Promise<Buffer> {
+  assertScale(scale);
+  return encodePng(renderLitRgba(document, light, options), scale);
+}
+
+async function encodePng(rendered: RenderedRgba, scale = 1): Promise<Buffer> {
+  let image = sharp(Buffer.from(rendered.data), {
     raw: { width: rendered.width, height: rendered.height, channels: 4 }
-  })
-    .png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
-    .toBuffer();
+  });
+  if (scale > 1) image = image.resize(rendered.width * scale, rendered.height * scale, { kernel: "nearest" });
+  return image.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer();
 }
 
 export async function renderPreviewPng(
@@ -17,16 +51,14 @@ export async function renderPreviewPng(
   scale = 8,
   options: RenderOptions = {}
 ): Promise<Buffer> {
+  assertScale(scale);
+  return encodePng(renderRgba(document, options), scale);
+}
+
+function assertScale(scale: number): void {
   if (!Number.isInteger(scale) || scale < 1 || scale > 64) {
     throw new RangeError("Preview scale must be an integer between 1 and 64.");
   }
-  const rendered = renderRgba(document, options);
-  return sharp(Buffer.from(rendered.data), {
-    raw: { width: rendered.width, height: rendered.height, channels: 4 }
-  })
-    .resize(rendered.width * scale, rendered.height * scale, { kernel: "nearest" })
-    .png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
-    .toBuffer();
 }
 
 export async function renderLayerPng(

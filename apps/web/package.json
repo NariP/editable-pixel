@@ -16,7 +16,9 @@
     "@dnd-kit/utilities": "3.2.2",
     "@editable-pixel/core": "workspace:*",
     "@editable-pixel/document": "workspace:*",
+    "@editable-pixel/project": "workspace:*",
     "@editable-pixel/renderer": "workspace:*",
+    "@editable-pixel/server": "workspace:*",
     "@radix-ui/react-dialog": "1.1.23",
     "@radix-ui/react-tooltip": "1.2.16",
     "class-variance-authority": "0.7.1",
@@ -25,6 +27,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-icons": "5.7.0",
+    "react-resizable-panels": "^4.12.3",
     "tailwind-merge": "3.6.0"
   },
   "devDependencies": {

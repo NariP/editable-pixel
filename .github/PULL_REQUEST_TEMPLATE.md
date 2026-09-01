@@ -11,6 +11,7 @@
 - [ ] `pnpm verify`
 - [ ] `pnpm test:e2e` when web/session/CLI/MCP behavior changed
 - [ ] `pnpm test:distribution` when packaging or executable behavior changed
+- [ ] `pnpm test:source-install` when installation, build, or development-server behavior changed
 - [ ] Pixel Document, CLI, MCP, security, or release docs updated when their public contract changed
 - [ ] No token, one-time launch URL, personal path, private image, or generated archive is included
 

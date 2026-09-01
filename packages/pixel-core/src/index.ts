@@ -1,7 +1,10 @@
 import {
+  DEFAULT_FRAME_LIGHTING,
+  NEUTRAL_NORMAL,
   assertPixelDocument,
   computeContentBounds,
   createDocumentId,
+  type FrameLightingInterpolation,
   type Layer,
   type PixelDocument,
   type Rect,
@@ -44,13 +47,23 @@ export interface PalettePixelPatch extends PatchBase {
   changes: PixelChange[];
 }
 
+export interface NormalPixelPatch extends PatchBase {
+  kind: "normal-pixels";
+  layerId: string;
+  frameId: string;
+  bounds: Rect;
+  selection?: Selection;
+  outsideSelectionHash?: string;
+  changes: PixelChange[];
+}
+
 export interface DocumentPatch extends PatchBase {
   kind: "document";
   before: PixelDocument;
   after: PixelDocument;
 }
 
-export type Patch = PixelPatch | PalettePixelPatch | DocumentPatch;
+export type Patch = PixelPatch | PalettePixelPatch | NormalPixelPatch | DocumentPatch;
 
 export class PatchConflictError extends Error {
   constructor(message: string) {
@@ -185,6 +198,113 @@ export function fill(
   }
 
   return createPixelPatch(document, layerId, frameId, changes, selection, "Fill");
+}
+
+export function setNormalPixel(
+  document: PixelDocument,
+  layerId: string,
+  frameId: string,
+  x: number,
+  y: number,
+  normal: number,
+  selection?: Selection,
+  reason = "Paint normal"
+): NormalPixelPatch {
+  assertCoordinate(document, x, y);
+  assertPackedNormal(normal);
+  const normals = getNormalPixels(document, layerId, frameId);
+  const index = y * document.canvas.width + x;
+  return createNormalPixelPatch(document, layerId, frameId, [
+    { index, before: normals[index]!, after: normal }
+  ], selection, reason);
+}
+
+export function resetNormalPixel(
+  document: PixelDocument,
+  layerId: string,
+  frameId: string,
+  x: number,
+  y: number,
+  selection?: Selection
+): NormalPixelPatch {
+  return setNormalPixel(document, layerId, frameId, x, y, NEUTRAL_NORMAL, selection, "Reset normal");
+}
+
+export function fillNormal(
+  document: PixelDocument,
+  layerId: string,
+  frameId: string,
+  x: number,
+  y: number,
+  normal: number,
+  selection?: Selection
+): NormalPixelPatch {
+  assertCoordinate(document, x, y);
+  assertPackedNormal(normal);
+  const normals = getNormalPixels(document, layerId, frameId);
+  const width = document.canvas.width;
+  const height = document.canvas.height;
+  const startIndex = y * width + x;
+  const target = normals[startIndex]!;
+  if (target === normal) return createNormalPixelPatch(document, layerId, frameId, [], selection, "Fill normal");
+
+  const queued = new Uint8Array(normals.length);
+  const queue = [startIndex];
+  const changes: PixelChange[] = [];
+  queued[startIndex] = 1;
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    if (normals[index] !== target) continue;
+    const currentX = index % width;
+    const currentY = Math.floor(index / width);
+    if (selection && !contains(selection, width, currentX, currentY)) continue;
+    changes.push({ index, before: target, after: normal });
+    const neighbors = [
+      currentX > 0 ? index - 1 : -1,
+      currentX + 1 < width ? index + 1 : -1,
+      currentY > 0 ? index - width : -1,
+      currentY + 1 < height ? index + width : -1
+    ];
+    for (const neighbor of neighbors) {
+      if (neighbor >= 0 && queued[neighbor] === 0) {
+        queued[neighbor] = 1;
+        queue.push(neighbor);
+      }
+    }
+  }
+  return createNormalPixelPatch(document, layerId, frameId, changes, selection, "Fill normal");
+}
+
+export function clearNormalSelection(document: PixelDocument, selection: Selection): NormalPixelPatch {
+  const normals = getNormalPixels(document, selection.layerId, selection.frameId);
+  const changes: PixelChange[] = [];
+  forEachSelectedPixel(selection, document.canvas.width, (index) => {
+    changes.push({ index, before: normals[index]!, after: NEUTRAL_NORMAL });
+  });
+  return createNormalPixelPatch(
+    document,
+    selection.layerId,
+    selection.frameId,
+    changes,
+    selection,
+    "Reset selected normals"
+  );
+}
+
+export function resetNormalFrame(
+  document: PixelDocument,
+  layerId: string,
+  frameId: string
+): NormalPixelPatch {
+  const normals = getNormalPixels(document, layerId, frameId);
+  return createNormalPixelPatch(
+    document,
+    layerId,
+    frameId,
+    normals.map((before, index) => ({ index, before, after: NEUTRAL_NORMAL })),
+    undefined,
+    "Reset normal map"
+  );
 }
 
 export function replaceColor(
@@ -345,6 +465,51 @@ export function createPixelPatch(
   };
 }
 
+export function createNormalPixelPatch(
+  document: PixelDocument,
+  layerId: string,
+  frameId: string,
+  rawChanges: PixelChange[],
+  selection: Selection | undefined,
+  reason: string
+): NormalPixelPatch {
+  const normals = getNormalPixels(document, layerId, frameId);
+  const byIndex = new Map<number, PixelChange>();
+  for (const change of rawChanges) {
+    if (!Number.isInteger(change.index) || change.index < 0 || change.index >= normals.length) {
+      throw new RangeError(`Normal pixel index ${change.index} is outside the canvas.`);
+    }
+    assertPackedNormal(change.after);
+    if (selection) {
+      const x = change.index % document.canvas.width;
+      const y = Math.floor(change.index / document.canvas.width);
+      if (!contains(selection, document.canvas.width, x, y)) {
+        throw new RangeError("Bounded edits cannot change normals outside the selection.");
+      }
+    }
+    if (change.before !== normals[change.index]) {
+      throw new PatchConflictError(`Normal pixel ${change.index} does not match the document.`);
+    }
+    if (change.before !== change.after) byIndex.set(change.index, change);
+  }
+  const changes = [...byIndex.values()].sort((left, right) => left.index - right.index);
+  const base = {
+    documentId: document.id,
+    baseRevision: document.revision,
+    layerId,
+    frameId,
+    bounds: boundsForChanges(changes, document.canvas.width),
+    ...(selection ? {
+      selection,
+      outsideSelectionHash: hashOutsideSelection(normals, document.canvas.width, selection)
+    } : {}),
+    changes,
+    reason,
+    createdAt: new Date().toISOString()
+  };
+  return { kind: "normal-pixels", id: createDocumentId(base), ...base };
+}
+
 export function createPalettePixelPatch(
   document: PixelDocument,
   layerId: string,
@@ -436,7 +601,9 @@ export function applyPatch(document: PixelDocument, patch: Patch): PixelDocument
 
   const next = structuredClone(document);
   if (patch.kind === "palette-pixels") next.palette.push(...patch.newColors);
-  const pixels = getPixels(next, patch.layerId, patch.frameId);
+  const pixels = patch.kind === "normal-pixels"
+    ? getOrCreateNormalPixels(next, patch.layerId, patch.frameId)
+    : getPixels(next, patch.layerId, patch.frameId);
   if (patch.selection && patch.outsideSelectionHash !== hashOutsideSelection(pixels, next.canvas.width, patch.selection)) {
     throw new PatchConflictError("Pixels outside the selection changed after the patch was created.");
   }
@@ -451,14 +618,15 @@ export function applyPatch(document: PixelDocument, patch: Patch): PixelDocument
     if (pixels[change.index] !== change.before) {
       throw new PatchConflictError(`Pixel ${change.index} changed after the patch was created.`);
     }
-    if (change.after < 0 || change.after >= next.palette.length) {
+    if (patch.kind === "normal-pixels") assertPackedNormal(change.after);
+    else if (change.after < 0 || change.after >= next.palette.length) {
       throw new PatchConflictError(`Palette index ${change.after} is not available for this patch.`);
     }
     pixels[change.index] = change.after;
   }
   next.revision += 1;
   next.metadata.modifiedBy = "editable-pixel-patch";
-  next.contentBounds = computeDocumentContentBounds(next);
+  if (patch.kind !== "normal-pixels") next.contentBounds = computeDocumentContentBounds(next);
   assertPixelDocument(next);
   return next;
 }
@@ -474,6 +642,20 @@ export function invertPatch(patch: Patch, appliedDocument: PixelDocument): Patch
     before.palette.splice(-patch.newColors.length, patch.newColors.length);
     before.contentBounds = computeDocumentContentBounds(before);
     return createDocumentPatch(appliedDocument, before, `Undo: ${patch.reason}`);
+  }
+  if (patch.kind === "normal-pixels") {
+    return createNormalPixelPatch(
+      appliedDocument,
+      patch.layerId,
+      patch.frameId,
+      patch.changes.map((change) => ({
+        index: change.index,
+        before: change.after,
+        after: change.before
+      })),
+      patch.selection,
+      `Undo: ${patch.reason}`
+    );
   }
   return createPixelPatch(
     appliedDocument,
@@ -532,7 +714,9 @@ function rebasePatch(patch: Patch, document: PixelDocument): Patch {
   if (patch.kind === "document") {
     return createDocumentPatch(document, patch.after, patch.reason);
   }
-  const pixels = getPixels(document, patch.layerId, patch.frameId);
+  const pixels = patch.kind === "normal-pixels"
+    ? getNormalPixels(document, patch.layerId, patch.frameId)
+    : getPixels(document, patch.layerId, patch.frameId);
   if (patch.kind === "palette-pixels") {
     return createPalettePixelPatch(
       document,
@@ -540,6 +724,20 @@ function rebasePatch(patch: Patch, document: PixelDocument): Patch {
       patch.frameId,
       patch.newColors,
       patch.changes.map((change) => ({ index: change.index, before: pixels[change.index]!, after: change.after })),
+      patch.selection,
+      patch.reason
+    );
+  }
+  if (patch.kind === "normal-pixels") {
+    return createNormalPixelPatch(
+      document,
+      patch.layerId,
+      patch.frameId,
+      patch.changes.map((change) => ({
+        index: change.index,
+        before: pixels[change.index]!,
+        after: change.after
+      })),
       patch.selection,
       patch.reason
     );
@@ -564,6 +762,25 @@ export function getPixels(document: PixelDocument, layerId: string, frameId: str
   const pixels = layer.frames[frameId];
   if (!pixels) throw new Error(`Unknown frame: ${frameId}`);
   return pixels;
+}
+
+export function getNormalPixels(document: PixelDocument, layerId: string, frameId: string): number[] {
+  const layer = document.layers.find((candidate) => candidate.id === layerId);
+  if (!layer) throw new Error(`Unknown layer: ${layerId}`);
+  if (!document.frames.some((frame) => frame.id === frameId)) throw new Error(`Unknown frame: ${frameId}`);
+  return layer.normalFrames?.[frameId]
+    ?? Array.from({ length: document.canvas.width * document.canvas.height }, () => NEUTRAL_NORMAL);
+}
+
+function getOrCreateNormalPixels(document: PixelDocument, layerId: string, frameId: string): number[] {
+  const layer = document.layers.find((candidate) => candidate.id === layerId);
+  if (!layer) throw new Error(`Unknown layer: ${layerId}`);
+  if (!document.frames.some((frame) => frame.id === frameId)) throw new Error(`Unknown frame: ${frameId}`);
+  layer.normalFrames ??= Object.fromEntries(document.frames.map((frame) => [
+    frame.id,
+    Array.from({ length: document.canvas.width * document.canvas.height }, () => NEUTRAL_NORMAL)
+  ]));
+  return layer.normalFrames[frameId]!;
 }
 
 export function addLayer(document: PixelDocument, name: string): DocumentPatch {
@@ -612,6 +829,14 @@ export function pasteLayer(document: PixelDocument, source: Layer): DocumentPatc
       ? [...source.frames[frame.id]!]
       : Array.from({ length: next.canvas.width * next.canvas.height }, () => next.transparentColorIndex)
   ]));
+  if (source.normalFrames) {
+    copy.normalFrames = Object.fromEntries(next.frames.map((frame) => [
+      frame.id,
+      source.normalFrames?.[frame.id]
+        ? [...source.normalFrames[frame.id]!]
+        : Array.from({ length: next.canvas.width * next.canvas.height }, () => NEUTRAL_NORMAL)
+    ]));
+  }
   next.layers.push(copy);
   return createDocumentPatch(document, next, "Paste layer");
 }
@@ -664,15 +889,26 @@ export function setLayerOpacity(
   return createDocumentPatch(document, next, "Set layer opacity");
 }
 
-export function addFrame(document: PixelDocument, name: string, durationMs = 100): DocumentPatch {
+export function addFrame(
+  document: PixelDocument,
+  name: string,
+  durationMs = 100,
+  lighting: NonNullable<PixelDocument["frames"][number]["lighting"]> = DEFAULT_FRAME_LIGHTING
+): DocumentPatch {
   const next = structuredClone(document);
   const id = uniqueId("frame", next.frames.map((frame) => frame.id));
-  next.frames.push({ id, name, durationMs });
+  next.frames.push({ id, name, durationMs, lighting: { ...lighting } });
   for (const layer of next.layers) {
     layer.frames[id] = Array.from(
       { length: next.canvas.width * next.canvas.height },
       () => next.transparentColorIndex
     );
+    if (layer.normalFrames) {
+      layer.normalFrames[id] = Array.from(
+        { length: next.canvas.width * next.canvas.height },
+        () => NEUTRAL_NORMAL
+      );
+    }
   }
   return createDocumentPatch(document, next, "Add frame");
 }
@@ -682,7 +918,10 @@ export function removeFrame(document: PixelDocument, frameId: string): DocumentP
   const next = structuredClone(document);
   next.frames = next.frames.filter((frame) => frame.id !== frameId);
   if (next.frames.length === document.frames.length) throw new Error(`Unknown frame: ${frameId}`);
-  for (const layer of next.layers) delete layer.frames[frameId];
+  for (const layer of next.layers) {
+    delete layer.frames[frameId];
+    if (layer.normalFrames) delete layer.normalFrames[frameId];
+  }
   next.regions = next.regions.filter((region) => region.frameId !== frameId);
   if (next.selection?.frameId === frameId) delete next.selection;
   next.contentBounds = computeDocumentContentBounds(next);
@@ -695,7 +934,10 @@ export function duplicateFrame(document: PixelDocument, frameId: string): Docume
   const next = structuredClone(document);
   const id = uniqueId(`${source.id}-copy`, next.frames.map((frame) => frame.id));
   next.frames.push({ ...source, id, name: `${source.name} copy` });
-  for (const layer of next.layers) layer.frames[id] = [...layer.frames[frameId]!];
+  for (const layer of next.layers) {
+    layer.frames[id] = [...layer.frames[frameId]!];
+    if (layer.normalFrames) layer.normalFrames[id] = [...layer.normalFrames[frameId]!];
+  }
   return createDocumentPatch(document, next, "Duplicate frame");
 }
 
@@ -723,6 +965,47 @@ export function setFrameDuration(
   if (!frame) throw new Error(`Unknown frame: ${frameId}`);
   frame.durationMs = durationMs;
   return createDocumentPatch(document, next, "Set frame duration");
+}
+
+export function setFrameLighting(
+  document: PixelDocument,
+  frameId: string,
+  lighting: NonNullable<PixelDocument["frames"][number]["lighting"]>
+): DocumentPatch {
+  const next = structuredClone(document);
+  const frame = next.frames.find((candidate) => candidate.id === frameId);
+  if (!frame) throw new Error(`Unknown frame: ${frameId}`);
+  frame.lighting = { ...lighting };
+  return createDocumentPatch(document, next, "Set frame lighting");
+}
+
+export function setFrameLightingInterpolation(
+  document: PixelDocument,
+  frameId: string,
+  interpolation: FrameLightingInterpolation
+): DocumentPatch {
+  const next = structuredClone(document);
+  const frame = next.frames.find((candidate) => candidate.id === frameId);
+  if (!frame) throw new Error(`Unknown frame: ${frameId}`);
+  if (!frame.lighting) throw new Error("Only a lighting keyframe can set interpolation.");
+  frame.lightingInterpolation = interpolation;
+  return createDocumentPatch(document, next, "Set lighting interpolation");
+}
+
+export function removeFrameLightingKeyframe(
+  document: PixelDocument,
+  frameId: string,
+  orderedFrameIds: readonly string[] = document.frames.map((frame) => frame.id)
+): DocumentPatch {
+  const next = structuredClone(document);
+  const frame = next.frames.find((candidate) => candidate.id === frameId);
+  if (!frame) throw new Error(`Unknown frame: ${frameId}`);
+  if (!frame.lighting) throw new Error("This frame is already interpolated.");
+  const remainingKeyframes = orderedFrameIds.filter((id) => id !== frameId && next.frames.find((candidate) => candidate.id === id)?.lighting);
+  if (remainingKeyframes.length === 0) throw new Error("A clip must keep at least one lighting keyframe.");
+  delete frame.lighting;
+  delete frame.lightingInterpolation;
+  return createDocumentPatch(document, next, "Remove lighting keyframe");
 }
 
 export function reorderFrame(document: PixelDocument, frameId: string, toIndex: number): DocumentPatch {
@@ -760,6 +1043,18 @@ export function resizeCanvas(
         offset.y,
         next.transparentColorIndex
       );
+      if (layer.normalFrames) {
+        layer.normalFrames[frame.id] = copyPixelsToCanvas(
+          layer.normalFrames[frame.id]!,
+          document.canvas.width,
+          document.canvas.height,
+          width,
+          height,
+          offset.x,
+          offset.y,
+          NEUTRAL_NORMAL
+        );
+      }
     }
   }
 
@@ -812,6 +1107,23 @@ export function resizeContent(document: PixelDocument, target: Rect): DocumentPa
         }
       }
       layer.frames[frame.id] = output;
+      if (layer.normalFrames) {
+        const normalInput = document.layers.find((candidate) => candidate.id === layer.id)!
+          .normalFrames![frame.id]!;
+        const normalOutput = Array.from(
+          { length: document.canvas.width * document.canvas.height },
+          () => NEUTRAL_NORMAL
+        );
+        for (let y = 0; y < target.height; y += 1) {
+          for (let x = 0; x < target.width; x += 1) {
+            const sourceX = source.x + Math.min(source.width - 1, Math.floor((x * source.width) / target.width));
+            const sourceY = source.y + Math.min(source.height - 1, Math.floor((y * source.height) / target.height));
+            normalOutput[(target.y + y) * document.canvas.width + target.x + x] =
+              normalInput[sourceY * document.canvas.width + sourceX]!;
+          }
+        }
+        layer.normalFrames[frame.id] = normalOutput;
+      }
     }
   }
 
@@ -942,6 +1254,12 @@ function assertCoordinate(document: PixelDocument, x: number, y: number): void {
 function assertPaletteIndex(document: PixelDocument, index: number): void {
   if (!Number.isInteger(index) || index < 0 || index >= document.palette.length) {
     throw new RangeError(`Palette index ${index} is invalid.`);
+  }
+}
+
+function assertPackedNormal(normal: number): void {
+  if (!Number.isInteger(normal) || normal < 0 || normal > 0xffffff) {
+    throw new RangeError("Packed normal must be an RGB integer between 0 and 16777215.");
   }
 }
 

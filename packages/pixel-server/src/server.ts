@@ -1,27 +1,49 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
+import { access, realpath, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { extname, isAbsolute, join, normalize, relative as pathRelative, resolve } from "node:path";
 
 import { convertBatch, type ConvertOptions, type InputMetadata } from "@editable-pixel/converter";
 import type { Patch } from "@editable-pixel/core";
-import { validatePixelDocument, type PixelDocument, type Selection } from "@editable-pixel/document";
-import { renderPreviewPng } from "@editable-pixel/renderer/node";
+import {
+  resolveFrameLighting,
+  validatePixelDocument,
+  type PixelDocument,
+  type Selection
+} from "@editable-pixel/document";
+import {
+  renderLitPreviewPng,
+  renderNormalPreviewPng,
+  renderPreviewPng
+} from "@editable-pixel/renderer/node";
+import {
+  ProjectRevisionConflictError,
+  ProjectUnavailableError,
+  type PixelProject
+} from "@editable-pixel/project";
 import Busboy from "busboy";
 import { WebSocket, WebSocketServer } from "ws";
 
-import { SessionError, SessionStore, type SessionSnapshot } from "./session-store.js";
+import { SessionError, SessionStore, type SessionProjectContext, type SessionSnapshot } from "./session-store.js";
+import { isProjectAction, type EditablePixelAction, type SelectionCommand } from "./agent-actions.js";
+import { FileProjectStore } from "./project-store.js";
+import type { WebControlCommand } from "./web-actions.js";
 
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
+const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGES = 64;
+const MAX_WEB_COMMAND_BYTES = 96 * 1024 * 1024;
+const WEB_COMMAND_TIMEOUT_MS = 60_000;
 
 export interface PixelServerOptions {
   port?: number;
   host?: "127.0.0.1";
   webDist?: string;
   daemonToken?: string;
+  projectStoreRoot?: string;
 }
 
 export interface RunningPixelServer {
@@ -29,6 +51,7 @@ export interface RunningPixelServer {
   host: "127.0.0.1";
   daemonToken: string;
   store: SessionStore;
+  projectStore: FileProjectStore;
   close: () => Promise<void>;
 }
 
@@ -36,7 +59,14 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
   const host = options.host ?? "127.0.0.1";
   const daemonToken = options.daemonToken ?? randomBytes(32).toString("base64url");
   const store = new SessionStore();
+  const projectStore = new FileProjectStore(options.projectStoreRoot ?? join(homedir(), ".editable-pixel", "projects"));
   const sockets = new Map<string, Set<WebSocket>>();
+  const pendingWebCommands = new Map<string, {
+    sessionId: string;
+    resolve: (result: unknown) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   const rateLimits = new Map<string, { start: number; count: number }>();
   let port = options.port ?? 0;
   const webDist = options.webDist ? await realpath(options.webDist) : undefined;
@@ -61,6 +91,7 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
         const body = await jsonBody<{
           document?: PixelDocument;
           documentPath?: string;
+          projectPath?: string;
           outputDirectory?: string;
           host?: "browser" | "codex" | "claude";
         }>(request);
@@ -103,11 +134,66 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
         if (request.method === "GET" && action === "selection") {
           return json(response, 200, { sessionId, selection: store.get(sessionId).selection ?? null });
         }
+        if (request.method === "GET" && action === "selection-context") {
+          const padding = Number(url.searchParams.get("padding") ?? "1");
+          return json(response, 200, store.getSelectionContext(sessionId, padding));
+        }
+        if (request.method === "GET" && action === "metadata") {
+          return json(response, 200, store.getMetadata(sessionId));
+        }
+        if (request.method === "GET" && action === "design-context") {
+          const padding = Number(url.searchParams.get("padding") ?? "1");
+          const includeNormals = url.searchParams.get("includeNormals") === "true";
+          const bounds = parseBounds(url.searchParams.get("bounds"));
+          return json(response, 200, store.getDesignContext(sessionId, {
+            padding,
+            includeNormals,
+            ...(bounds ? { bounds } : {})
+          }));
+        }
+        if (request.method === "GET" && action === "palette-context") {
+          return json(response, 200, store.getPaletteContext(sessionId));
+        }
+        if (request.method === "GET" && action === "motion-context") {
+          return json(response, 200, store.getMotionContext(sessionId));
+        }
+        if (request.method === "GET" && action === "history") {
+          const limit = Number(url.searchParams.get("limit") ?? "50");
+          return json(response, 200, store.getHistory(sessionId, limit));
+        }
         if (request.method === "POST" && action === "selection") {
           const body = await jsonBody<{ selection?: Selection }>(request);
-          const session = store.setSelection(sessionId, body.selection);
+          const session = store.setSelection(sessionId, body.selection, clientName === "mcp" ? "ai" : "user", clientName);
           broadcast(sockets, sessionId, { type: "state", ...sessionMessage(session) });
           return json(response, 200, session);
+        }
+        if (request.method === "POST" && action === "selection-command") {
+          const body = await jsonBody<{ command: SelectionCommand }>(request);
+          const session = store.setSelectionCommand(sessionId, body.command, "ai", clientName ?? "mcp");
+          broadcast(sockets, sessionId, { type: "state", ...sessionMessage(session) });
+          return json(response, 200, session);
+        }
+        if (request.method === "PUT" && action === "project") {
+          const body = await jsonBody<{ project: PixelProject; expectedRevision: number }>(request, MAX_PROJECT_BYTES);
+          const saved = body.expectedRevision < 0
+            ? await projectStore.create(body.project)
+            : await projectStore.persist(body.project, body.expectedRevision);
+          const session = store.setProject(sessionId, saved);
+          broadcast(sockets, sessionId, { type: "state", projectChanged: true, ...sessionMessage(session) });
+          return json(response, 200, { projectId: saved.id, revision: saved.revision });
+        }
+        if (request.method === "GET" && action === "project-context") {
+          return json(response, 200, { sessionId, context: store.get(sessionId).projectContext ?? null });
+        }
+        if (request.method === "POST" && action === "project-context") {
+          const body = await jsonBody<{ context: SessionProjectContext }>(request);
+          const session = store.setProjectContext(sessionId, body.context);
+          broadcast(sockets, sessionId, { type: "context", projectContext: session.projectContext });
+          return json(response, 200, { sessionId, context: session.projectContext });
+        }
+        if (request.method === "GET" && action.startsWith("projects/")) {
+          const projectId = decodeURIComponent(action.slice("projects/".length));
+          return json(response, 200, { project: await projectStore.open(projectId) });
         }
         if (request.method === "POST" && action === "patches/preview") {
           const body = await jsonBody<{ patch: Patch }>(request);
@@ -130,9 +216,41 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
         if (request.method === "POST" && action === "patches/apply") {
           const body = await jsonBody<{ patch?: Patch; patchId?: string }>(request);
           if (!body.patch && !body.patchId) throw new SessionError("PATCH_REQUIRED", "Provide patch or patchId.", 400);
-          const session = await store.applyPatch(sessionId, body.patch ?? body.patchId!);
+          const session = await store.applyPatch(
+            sessionId,
+            body.patch ?? body.patchId!,
+            clientName === "mcp" ? "ai" : "user",
+            clientName
+          );
           broadcast(sockets, sessionId, { type: "patch.resolved", ...sessionMessage(session) });
           return json(response, 200, session);
+        }
+        if (request.method === "POST" && action === "actions") {
+          const body = await jsonBody<{ action: EditablePixelAction; reason: string }>(request);
+          if (!body.reason?.trim()) throw new SessionError("ACTION_REASON_REQUIRED", "AI edits require a concise reason.", 400);
+          const session = await store.executeAction(sessionId, {
+            action: body.action,
+            reason: body.reason.trim(),
+            actor: "ai",
+            client: clientName ?? "mcp"
+          });
+          broadcast(sockets, sessionId, {
+            type: "state",
+            ...(isProjectAction(body.action) ? { projectChanged: true } : {}),
+            ...sessionMessage(session)
+          });
+          return json(response, 200, session);
+        }
+        if (request.method === "POST" && action === "web-command") {
+          const body = await jsonBody<{ command: WebControlCommand }>(request, MAX_WEB_COMMAND_BYTES);
+          assertWebCommand(body.command);
+          const result = await dispatchWebCommand(
+            sockets,
+            pendingWebCommands,
+            sessionId,
+            body.command
+          );
+          return json(response, 200, { sessionId, result });
         }
         if (request.method === "POST" && action === "patches/reject") {
           const body = await jsonBody<{ patchId: string }>(request);
@@ -153,6 +271,55 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
           return json(response, 200, {
             mimeType: "image/png",
             data: png.toString("base64"),
+            width: session.document.canvas.width * scale,
+            height: session.document.canvas.height * scale
+          });
+        }
+        if (request.method === "POST" && action === "export-frame") {
+          const body = await jsonBody<{
+            format?: "color" | "normal" | "lit";
+            scale?: number;
+            frameId?: string;
+            filename: string;
+          }>(request);
+          const session = store.get(sessionId);
+          const format = body.format ?? "color";
+          const scale = body.scale ?? 1;
+          const frame = body.frameId
+            ? session.document.frames.find((candidate) => candidate.id === body.frameId)
+            : session.document.frames[0];
+          if (!frame) throw new SessionError("FRAME_NOT_FOUND", "The requested frame does not exist.", 404);
+          if (!body.filename.toLowerCase().endsWith(".png")) {
+            throw new SessionError("INVALID_OUTPUT_FILENAME", "Frame exports must use a .png filename.", 400);
+          }
+          const png = format === "normal"
+            ? await renderNormalPreviewPng(session.document, scale, { frameId: frame.id })
+            : format === "lit"
+              ? await renderLitPreviewPng(
+                session.document,
+                resolveFrameLighting(
+                  session.document,
+                  session.document.frames.map((candidate) => candidate.id),
+                  frame.id
+                ),
+                scale,
+                { frameId: frame.id }
+              )
+              : await renderPreviewPng(session.document, scale, { frameId: frame.id });
+          const path = store.outputPath(sessionId, body.filename);
+          try {
+            await writeFile(path, png, { flag: "wx" });
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+              throw new SessionError("OUTPUT_EXISTS", "The output file already exists. Choose another filename.", 409);
+            }
+            throw error;
+          }
+          return json(response, 201, {
+            path,
+            format,
+            frameId: frame.id,
+            mimeType: "image/png",
             width: session.document.canvas.width * scale,
             height: session.document.canvas.height * scale
           });
@@ -194,12 +361,23 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
               patch?: Patch;
               patchId?: string;
               decision?: "apply" | "reject";
+              context?: SessionProjectContext;
+              commandId?: string;
+              ok?: boolean;
+              result?: unknown;
+              error?: { message?: string };
+              actor?: "user" | "ai";
             };
             if (message.type === "selection.set") {
-              const updated = store.setSelection(sessionId, message.selection);
+              const updated = store.setSelection(sessionId, message.selection, "user", clientId);
               broadcast(sockets, sessionId, { type: "state", ...sessionMessage(updated) });
             } else if (message.type === "document.patch" && message.patch) {
-              const updated = await store.applyPatch(sessionId, message.patch);
+              const updated = await store.applyPatch(
+                sessionId,
+                message.patch,
+                message.actor === "ai" ? "ai" : "user",
+                message.actor === "ai" ? "mcp-web" : clientId
+              );
               broadcast(sockets, sessionId, { type: "state", ...sessionMessage(updated) });
             } else if (message.type === "patch.decision" && message.patchId) {
               const updated = message.decision === "apply"
@@ -212,6 +390,21 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
             } else if (message.type === "history.redo") {
               const updated = await store.redo(sessionId);
               broadcast(sockets, sessionId, { type: "state", ...sessionMessage(updated) });
+            } else if (message.type === "context.set" && message.context) {
+              const updated = store.setProjectContext(sessionId, message.context);
+              broadcast(sockets, sessionId, { type: "context", projectContext: updated.projectContext });
+            } else if (message.type === "web.command.result" && message.commandId) {
+              const pending = pendingWebCommands.get(message.commandId);
+              if (!pending || pending.sessionId !== sessionId) return;
+              clearTimeout(pending.timer);
+              pendingWebCommands.delete(message.commandId);
+              if (message.ok === false) {
+                pending.reject(new SessionError(
+                  "WEB_COMMAND_FAILED",
+                  message.error?.message ?? "The browser could not complete the requested action.",
+                  422
+                ));
+              } else pending.resolve(message.result ?? null);
             }
             } catch (error) {
               webSocket.send(JSON.stringify({
@@ -246,7 +439,13 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
     host,
     daemonToken,
     store,
+    projectStore,
     close: () => new Promise<void>((resolvePromise, reject) => {
+      for (const [commandId, pending] of pendingWebCommands) {
+        clearTimeout(pending.timer);
+        pending.reject(new SessionError("SERVER_CLOSING", "The local server closed before the browser action completed.", 503));
+        pendingWebCommands.delete(commandId);
+      }
       for (const sessionSockets of sockets.values()) for (const socket of sessionSockets) socket.close();
       wsServer.close();
       httpServer.close((error) => error ? reject(error) : resolvePromise());
@@ -382,13 +581,13 @@ function bearer(request: IncomingMessage): string {
   return value.startsWith("Bearer ") ? value.slice(7) : "";
 }
 
-async function jsonBody<T>(request: IncomingMessage): Promise<T> {
+async function jsonBody<T>(request: IncomingMessage, limit = MAX_JSON_BYTES): Promise<T> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_JSON_BYTES) throw new SessionError("REQUEST_TOO_LARGE", "JSON request exceeds 5MB.", 413);
+    if (size > limit) throw new SessionError("REQUEST_TOO_LARGE", `JSON request exceeds ${Math.floor(limit / 1024 / 1024)}MB.`, 413);
     chunks.push(buffer);
   }
   try {
@@ -396,6 +595,18 @@ async function jsonBody<T>(request: IncomingMessage): Promise<T> {
   } catch {
     throw new SessionError("JSON_INVALID", "Request body must be valid JSON.", 400);
   }
+}
+
+function parseBounds(value: string | null): { x: number; y: number; width: number; height: number } | undefined {
+  if (!value) return undefined;
+  const [x, y, width, height] = value.split(",").map(Number);
+  if ([x, y, width, height].some((part) => !Number.isInteger(part))) {
+    throw new SessionError("BOUNDS_INVALID", "Bounds must be x,y,width,height integers.", 400);
+  }
+  if (x! < 0 || y! < 0 || width! < 1 || height! < 1) {
+    throw new SessionError("BOUNDS_INVALID", "Bounds must have non-negative origin and positive size.", 400);
+  }
+  return { x: x!, y: y!, width: width!, height: height! };
 }
 
 function applyRateLimit(limits: Map<string, { start: number; count: number }>, key: string): void {
@@ -417,7 +628,53 @@ function broadcast(sockets: Map<string, Set<WebSocket>>, id: string, message: un
 }
 
 function sessionMessage(session: SessionSnapshot) {
-  return { document: session.document, clients: session.clients, host: session.host };
+  return {
+    document: session.document,
+    clients: session.clients,
+    host: session.host,
+    ...(session.project ? { project: session.project } : {}),
+    ...(session.projectContext ? { projectContext: session.projectContext } : {})
+  };
+}
+
+function assertWebCommand(command: WebControlCommand | undefined): asserts command is WebControlCommand {
+  if (!command || typeof command !== "object" || typeof command.type !== "string") {
+    throw new SessionError("WEB_COMMAND_INVALID", "A typed browser command is required.", 400);
+  }
+}
+
+function dispatchWebCommand(
+  sockets: Map<string, Set<WebSocket>>,
+  pending: Map<string, {
+    sessionId: string;
+    resolve: (result: unknown) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>,
+  sessionId: string,
+  command: WebControlCommand
+): Promise<unknown> {
+  const socket = [...sockets.get(sessionId) ?? []].find((candidate) => candidate.readyState === WebSocket.OPEN);
+  if (!socket) {
+    throw new SessionError(
+      "WEB_CLIENT_REQUIRED",
+      "Open this session in the Editable Pixel browser before using browser-only controls.",
+      409
+    );
+  }
+  const commandId = `web-command-${randomBytes(12).toString("hex")}`;
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(commandId);
+      reject(new SessionError(
+        "WEB_COMMAND_TIMEOUT",
+        "The browser did not finish the requested action within 60 seconds.",
+        504
+      ));
+    }, WEB_COMMAND_TIMEOUT_MS);
+    pending.set(commandId, { sessionId, resolve: resolvePromise, reject, timer });
+    socket.send(JSON.stringify({ type: "web.command", commandId, command }));
+  });
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -437,11 +694,20 @@ function respondError(response: ServerResponse, error: unknown): void {
     return;
   }
   const payload = errorPayload(error);
-  json(response, error instanceof SessionError ? error.status : 500, payload);
+  const status = error instanceof SessionError
+    ? error.status
+    : error instanceof ProjectRevisionConflictError
+      ? 409
+      : error instanceof ProjectUnavailableError
+        ? 503
+        : 500;
+  json(response, status, payload);
 }
 
 function errorPayload(error: unknown): { error: { code: string; message: string } } {
   if (error instanceof SessionError) return { error: { code: error.code, message: error.message } };
+  if (error instanceof ProjectRevisionConflictError) return { error: { code: "PROJECT_REVISION_CONFLICT", message: error.message } };
+  if (error instanceof ProjectUnavailableError) return { error: { code: "PROJECT_STORE_UNAVAILABLE", message: error.message } };
   return { error: { code: "INTERNAL_ERROR", message: "The local server could not complete the request." } };
 }
 

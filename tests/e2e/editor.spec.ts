@@ -1,13 +1,9 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-
-import { createPixelDocument } from "@editable-pixel/document";
+import { NEUTRAL_NORMAL, createPixelDocument } from "@editable-pixel/document";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 
 const daemonToken = "editable-pixel-e2e-daemon-token";
-const fixturePath = fileURLToPath(new URL("../fixtures/character.pixel.json", import.meta.url));
-
 test("browser selection synchronizes with the session and survives reconnect", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
@@ -32,7 +28,7 @@ test("browser selection synchronizes with the session and survives reconnect", a
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Select", exact: true }).click();
-  const canvas = page.locator(".pixel-canvas-shell");
+  const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
   await page.mouse.move(box.x + box.width * 1.2 / 8, box.y + box.height * 1.2 / 6);
@@ -82,6 +78,115 @@ test("browser selection synchronizes with the session and survives reconnect", a
   await page.reload();
   await expect(page.locator(".status-connected")).toBeVisible();
   await expect(page.getByText("Editing within selection · 1,1 / 4×3 · Esc to clear")).toBeVisible();
+});
+
+test("AI selection and immediate edits use the visible Select tool and shared browser history", async ({ page, request }) => {
+  const created = await createSession(request);
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  await page.getByRole("button", { name: "Pen" }).click();
+  await expect(page.getByRole("button", { name: "Pen" })).toHaveAttribute("aria-pressed", "true");
+
+  const selected = await request.post(`/api/sessions/${created.session.id}/selection-command`, {
+    headers: authorization("mcp"),
+    data: {
+      command: { type: "rect", x: 1, y: 1, width: 2, height: 2, mode: "replace" }
+    }
+  });
+  expect(selected.ok()).toBeTruthy();
+  await expect(page.getByText("Editing within selection · 1,1 / 2×2 · Esc to clear")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Select", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".selection-shade")).toHaveCount(4);
+
+  const edited = await request.post(`/api/sessions/${created.session.id}/actions`, {
+    headers: authorization("mcp"),
+    data: {
+      reason: "Paint AI-selected highlight",
+      action: { type: "paint_selection", colorIndex: 2 }
+    }
+  });
+  expect(edited.ok()).toBeTruthy();
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 2, changed: 2 });
+
+  const history = await (await request.get(`/api/sessions/${created.session.id}/history`, {
+    headers: authorization("mcp")
+  })).json() as { entries: Array<{ actor: string; client?: string; reason: string; state: string }> };
+  expect(history.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      actor: "ai",
+      client: "mcp",
+      reason: "Paint AI-selected highlight",
+      state: "applied"
+    })
+  ]));
+
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 3, changed: 0 });
+  await expect(page.getByText("Editing within selection · 1,1 / 2×2 · Esc to clear")).toBeVisible();
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 4, changed: 2 });
+});
+
+test("semantic MCP web commands read and operate the connected browser without pixel-coordinate clicks", async ({ page, request }) => {
+  const created = await createSession(request);
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+
+  const contextResponse = await request.post(`/api/sessions/${created.session.id}/web-command`, {
+    headers: authorization("mcp"),
+    data: { command: { type: "get_context" } }
+  });
+  expect(contextResponse.ok()).toBeTruthy();
+  const { result: context } = await contextResponse.json() as { result: {
+    view: { inspectorTab: string; showGrid: boolean };
+    active: { frameId: string; layerId: string };
+    capabilities: { files: string[]; export: string[] };
+  }};
+  expect(context).toMatchObject({
+    view: { inspectorTab: "convert", showGrid: true },
+    active: { frameId: "idle-1", layerId: "artwork" }
+  });
+  expect(context.capabilities.files).toContain("open-project");
+  expect(context.capabilities.export).toEqual(expect.arrayContaining(["png", "normal", "lit", "gif", "json"]));
+
+  const controlled = await request.post(`/api/sessions/${created.session.id}/web-command`, {
+    headers: authorization("mcp"),
+    data: { command: { type: "set_view", inspectorTab: "edit", tool: "select", showGrid: false } }
+  });
+  expect(controlled.ok()).toBeTruthy();
+  await expect(page.getByRole("tab", { name: "Edit" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Select", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Toggle grid" })).toHaveAttribute("aria-pressed", "false");
+
+  const importedDocument = createPixelDocument({
+    id: "ai-imported-document",
+    width: 4,
+    height: 4,
+    palette: ["#00000000", "#ff007aff"],
+    pixels: [1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1]
+  });
+  const imported = await request.post(`/api/sessions/${created.session.id}/web-command`, {
+    headers: authorization("mcp"),
+    data: {
+      command: {
+        type: "import_files",
+        purpose: "replace-canvas",
+        files: [{
+          name: "ai-import.pixel.json",
+          mimeType: "application/json",
+          dataBase64: Buffer.from(JSON.stringify(importedDocument)).toString("base64")
+        }]
+      }
+    }
+  });
+  expect(imported.ok()).toBeTruthy();
+  await expect(page.getByLabel("Pixel canvas")).toHaveJSProperty("width", 4);
+  await expect(page.getByLabel("Pixel canvas")).toHaveJSProperty("height", 4);
+  await expect.poll(async () => {
+    const response = await request.get(`/api/sessions/${created.session.id}/history`, { headers: authorization("mcp") });
+    const history = await response.json() as { entries: Array<{ actor: string; reason: string; state: string }> };
+    return history.entries.some((entry) => entry.actor === "ai" && entry.state === "applied" && entry.reason.includes("Replace canvas"));
+  }).toBe(true);
 });
 
 test("the connected session document wins over a stale cached working document", async ({ page, request }) => {
@@ -139,8 +244,9 @@ test("the connected session document wins over a stale cached working document",
 
   await page.goto(`/?session=${created.session.id}&workspace=previous-workspace`);
   await expect(page.locator(".status-connected")).toBeVisible();
-  await expect(page.locator(".canvas-toolbar")).toContainText("8 × 6 PX");
-  await expect(page.locator(".canvas-toolbar")).toContainText("stale.pixel.json / V1");
+  await expect(page.getByLabel("Pixel canvas")).toHaveJSProperty("width", 8);
+  await expect(page.getByLabel("Pixel canvas")).toHaveJSProperty("height", 6);
+  await expect(page.getByRole("navigation", { name: "Project location" })).not.toContainText("V1");
   await expect.poll(() => page.url()).not.toContain("workspace=");
 });
 
@@ -148,7 +254,7 @@ test("Z-drag zooms the chosen canvas area", async ({ page }) => {
   await page.goto("/");
   const zoomLabel = page.locator(".zoom-control > span");
   const before = Number((await zoomLabel.textContent())?.replace("%", ""));
-  const canvas = page.locator(".pixel-canvas-shell");
+  const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
 
@@ -216,7 +322,7 @@ test("layer handles smoothly reorder the visible render stack", async ({ page })
 
 test("Escape clears the selection mask and participates in local undo and redo", async ({ page }) => {
   await page.goto("/");
-  const canvas = page.locator(".pixel-canvas-shell");
+  const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
   await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.25);
@@ -280,7 +386,10 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
   };
   const waitForUiSync = async () => {
     const { revision } = await sessionState();
-    await expect(page.locator(".canvas-footer span").first()).toContainText(`revision ${revision}.`);
+    await expect.poll(async () => {
+      const status = await page.locator(".canvas-footer span").first().textContent();
+      return Number(status?.match(/revision (\d+)\./)?.[1] ?? -1);
+    }).toBeGreaterThanOrEqual(revision);
   };
 
   const selectionStatus = page.locator(".canvas-footer span").last();
@@ -300,29 +409,26 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
   await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection });
   await waitForUiSync();
 
-  await page.evaluate(() => {
-    window.addEventListener("cut", (event) => {
-      document.body.dataset.pixelCutClipboard = event.clipboardData?.getData("text/plain") ?? "";
-    }, { once: true });
-  });
   await page.keyboard.press("Meta+X");
   await expect.poll(selectedPixels).toEqual({ pixels: [0, 0, 0, 0], selection });
-  await expect.poll(async () => {
-    const serialized = await page.locator("body").getAttribute("data-pixel-cut-clipboard");
-    return serialized ? JSON.parse(serialized) : undefined;
-  }).toMatchObject({
-    format: "editable-pixel-selection",
-    version: 1,
-    width: 4,
-    height: 1,
-    pixels: [1, 1, 1, 1]
-  });
-
   await page.keyboard.press("Meta+Z");
   await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection });
   await waitForUiSync();
+
+  const canvas = page.getByLabel("Pixel canvas");
+  const canvasBox = await canvas.boundingBox();
+  if (!canvasBox) throw new Error("Pixel canvas is not visible.");
+  await page.mouse.click(canvasBox.x + canvasBox.width * 0.05, canvasBox.y + canvasBox.height * 0.8);
+  await page.keyboard.press("Meta+V");
+  await expect.poll(async () => {
+    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
+    const session = await response.json() as { document: { layers: Array<{ id: string; frames: Record<string, number[]> }> } };
+    return session.document.layers.find((layer) => layer.id === "artwork")!.frames["idle-1"]!.slice(32, 36);
+  }).toEqual([1, 1, 1, 1]);
+  await page.keyboard.press("Meta+Z");
+  await waitForUiSync();
   await page.keyboard.press("Escape");
-  await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection: null });
+  await expect.poll(async () => (await sessionState()).selection).toBeNull();
   await expect(selectionStatus).toHaveText("No selection");
 });
 
@@ -331,7 +437,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
 
-  const canvas = page.locator(".pixel-canvas-shell");
+  const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
   await page.mouse.click(box.x + box.width * 0.35, box.y + box.height * 0.35);
@@ -443,6 +549,77 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
     )
   );
   expect(restoredPaste).toEqual(copied);
+});
+
+test("a visible Normal selection takes clipboard priority over layer focus", async ({ page, request }) => {
+  const normalPixels = new Array<number>(8 * 6).fill(NEUTRAL_NORMAL);
+  const copiedNormals = [0x6080ff, 0x7088ff, 0x9098ff, 0xa0a0ff];
+  normalPixels.splice(10, copiedNormals.length, ...copiedNormals);
+  const created = await createSession(request, { normalPixels });
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  await page.getByRole("tab", { name: "Edit" }).click();
+  await page.getByRole("button", { name: "Normal", exact: true }).click();
+
+  const sourceSelection = {
+    type: "rect",
+    x: 2,
+    y: 1,
+    width: 4,
+    height: 1,
+    layerId: "artwork",
+    frameId: "idle-1"
+  };
+  const selectedSource = await request.post(`/api/sessions/${created.session.id}/selection`, {
+    headers: authorization(),
+    data: { selection: sourceSelection }
+  });
+  expect(selectedSource.ok()).toBeTruthy();
+  await expect(page.getByText("Editing within selection · 2,1 / 4×1 · Esc to clear")).toBeVisible();
+
+  const artwork = page.getByRole("button", { name: "Select Artwork layer" });
+  await artwork.click();
+  await expect(artwork.locator("..")).toHaveClass(/keyboard-target/);
+  await page.evaluate(() => {
+    window.addEventListener("copy", (event) => {
+      document.body.dataset.normalPixelClipboard = event.clipboardData?.getData("text/plain") ?? "";
+    }, { once: true });
+  });
+  await page.keyboard.press("Meta+C");
+  await expect.poll(async () => {
+    const serialized = await page.locator("body").getAttribute("data-normal-pixel-clipboard");
+    return serialized ? JSON.parse(serialized) : undefined;
+  }).toMatchObject({
+    format: "editable-pixel-selection",
+    version: 1,
+    map: "normal",
+    width: 4,
+    height: 1,
+    pixels: copiedNormals
+  });
+
+  const destinationSelection = { ...sourceSelection, x: 2, y: 4 };
+  const selectedDestination = await request.post(`/api/sessions/${created.session.id}/selection`, {
+    headers: authorization(),
+    data: { selection: destinationSelection }
+  });
+  expect(selectedDestination.ok()).toBeTruthy();
+  await expect(page.getByText("Editing within selection · 2,4 / 4×1 · Esc to clear")).toBeVisible();
+  await artwork.click();
+  await expect(artwork.locator("..")).toHaveClass(/keyboard-target/);
+  await page.keyboard.press("Meta+V");
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
+    const session = await response.json() as {
+      document: { layers: Array<{ id: string; normalFrames?: Record<string, number[]> }> };
+    };
+    const layer = session.document.layers.find((candidate) => candidate.id === "artwork")!;
+    return {
+      layers: session.document.layers.length,
+      normals: layer.normalFrames?.["idle-1"]?.slice(34, 38)
+    };
+  }).toEqual({ layers: 1, normals: copiedNormals });
 });
 
 test("Cmd+V stamps one copied pixel into every pixel in a multi-selection", async ({ page, request }) => {
@@ -572,12 +749,12 @@ test("a bounded agent patch is previewed, rejected outside selection, and applie
       revision: session.revision,
       changed: session.document.layers.find((layer) => layer.id === "artwork")?.frames["idle-1"]?.[9]
     };
-  }).toEqual({ revision: 9, changed: 2 });
+  }).toEqual({ revision: 2, changed: 2 });
 
   await page.getByRole("button", { name: /Undo/ }).click();
-  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 10, changed: 0 });
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 3, changed: 0 });
   await page.getByRole("button", { name: /Redo/ }).click();
-  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 11, changed: 2 });
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 4, changed: 2 });
 
   const rejectedPatchResponse = await request.post(`/api/sessions/${created.session.id}/patches/create`, {
     headers: authorization(),
@@ -592,7 +769,7 @@ test("a bounded agent patch is previewed, rejected outside selection, and applie
   await expect(page.getByText("Keep the reviewed eye unchanged")).toBeVisible();
   await page.getByRole("button", { name: "REJECT" }).click();
   await expect(page.getByText("Keep the reviewed eye unchanged")).toBeHidden();
-  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 11, changed: 2 });
+  await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 4, changed: 2 });
 
   const beforePaletteAddition = await (await request.get(`/api/sessions/${created.session.id}`, {
     headers: authorization()
@@ -630,7 +807,7 @@ test("rapid connected-canvas edits keep sequential revisions without conflicts",
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
   await page.getByRole("button", { name: "Pen" }).click();
-  const canvas = page.locator(".pixel-canvas-shell");
+  const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
 
@@ -646,11 +823,34 @@ test("rapid connected-canvas edits keep sequential revisions without conflicts",
       document: { layers: Array<{ id: string; frames: Record<string, number[]> }> };
     };
     return {
-      revisionAdvanced: session.revision > 7,
+      revisionAdvanced: session.revision > 0,
       stroke: session.document.layers.find((layer) => layer.id === "artwork")?.frames["idle-1"]?.slice(0, 5)
     };
   }).toEqual({ revisionAdvanced: true, stroke: [1, 1, 1, 1, 1] });
   await expect(page.locator(".status-connected")).toBeVisible();
+});
+
+test("offline pixel edits stay visible, queue locally, and flush after reconnect", async ({ page, request, context }) => {
+  const created = await createSession(request);
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  const canvas = page.getByLabel("Pixel canvas");
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("Pixel canvas is not visible.");
+  const beforeImage = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
+
+  await context.setOffline(true);
+  await expect(page.locator(".status-reconnecting")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Pen" }).click();
+  await page.mouse.click(box.x + box.width * 1.2 / 8, box.y + box.height * 1.2 / 6);
+  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL())).not.toBe(beforeImage);
+  await expect(page.locator(".canvas-footer")).toContainText("queued until the local session reconnects");
+  expect((await sessionPixel(request, created.session.id)).changed).toBe(0);
+
+  await context.setOffline(false);
+  await expect(page.locator(".status-connected")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(async () => (await sessionPixel(request, created.session.id)).changed, { timeout: 15_000 }).toBe(1);
+  await expect(page.locator(".status-conflict")).toHaveCount(0);
 });
 
 test("keeps the previous conversion preview visible while a fixed palette removal reconverts", async ({ page, request }) => {
@@ -664,20 +864,22 @@ test("keeps the previous conversion preview visible while a fixed palette remova
     palette: ["#00000000", "#ff0000ff", "#0000ffff"],
     pixels: [1, 2]
   }));
+  const canvas = page.getByLabel("Pixel canvas");
+  const blankImage = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
   await page.locator('input[type="file"]').setInputFiles({
     name: "palette-preview.png",
     mimeType: "image/png",
     buffer: source
   });
-  await expect(page.getByRole("combobox", { name: "Source asset" })).toContainText("palette-preview.png");
+  await page.getByRole("button", { name: /Replace Canvas/ }).click();
+  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 10_000 }).not.toBe(blankImage);
 
-  const canvas = page.getByLabel("Pixel canvas");
   const appliedImage = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
   await page.getByRole("button", { name: "Add fixed palette color" }).click();
-  await page.getByLabel("Choose fixed palette color").fill("#00ff00");
+  await page.getByLabel("Choose fixed palette color", { exact: true }).fill("#00ff00");
   await page.getByRole("button", { name: "Add color" }).click();
   await page.getByRole("button", { name: "Add fixed palette color" }).click();
-  await page.getByLabel("Choose fixed palette color").fill("#ffff00");
+  await page.getByLabel("Choose fixed palette color", { exact: true }).fill("#ffff00");
   await page.getByRole("button", { name: "Add color" }).click();
 
   const surface = page.locator(".canvas-surface");
@@ -688,13 +890,13 @@ test("keeps the previous conversion preview visible while a fixed palette remova
 
   await page.getByRole("button", { name: "Remove fixed palette color 2" }).click();
   expect(await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL())).toBe(twoColorPreview);
-  await expect(page.getByRole("button", { name: "Save V1" })).toBeEnabled({ timeout: 10_000 });
+  await expect(surface).toHaveAttribute("aria-busy", "false", { timeout: 10_000 });
 
   const oneColorPreview = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
   await page.getByLabel("Background mode").click();
   await page.getByRole("option", { name: "Solid" }).click();
   expect(await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL())).toBe(oneColorPreview);
-  await expect(page.getByRole("button", { name: "Save V1" })).toBeEnabled({ timeout: 10_000 });
+  await expect(surface).toHaveAttribute("aria-busy", "false", { timeout: 10_000 });
 });
 
 test("commits numeric conversion inputs only after they lose focus", async ({ page, request }) => {
@@ -708,14 +910,16 @@ test("commits numeric conversion inputs only after they lose focus", async ({ pa
     palette: ["#00000000", "#ff0000ff", "#ff7f00ff", "#ffff00ff", "#00ff00ff", "#00ffffff", "#0000ffff", "#4b0082ff", "#9400d3ff"],
     pixels: [1, 2, 3, 4, 5, 6, 7, 8]
   }));
+  const canvas = page.getByLabel("Pixel canvas");
+  const blankImage = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
   await page.locator('input[type="file"]').setInputFiles({
     name: "color-count.png",
     mimeType: "image/png",
     buffer: source
   });
-  await expect(page.getByRole("combobox", { name: "Source asset" })).toContainText("color-count.png");
+  await page.getByRole("button", { name: /Replace Canvas/ }).click();
+  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 10_000 }).not.toBe(blankImage);
 
-  const canvas = page.getByLabel("Pixel canvas");
   const before = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
   const colorCount = page.getByLabel("Color count");
   await colorCount.fill("4");
@@ -726,7 +930,51 @@ test("commits numeric conversion inputs only after they lose focus", async ({ pa
   await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 10_000 }).not.toBe(before);
 });
 
-test("multiple AI image imports share conversion settings and update the canonical session document", async ({ page, request }) => {
+test("retained-source and sprite-sheet import purposes preserve their distinct ownership", async ({ page, request }) => {
+  const created = await createSession(request);
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  const first = await renderPng(createPixelDocument({
+    width: 2, height: 1, palette: ["#00000000", "#ff0000ff"], pixels: [1, 0]
+  }));
+  const replacement = await renderPng(createPixelDocument({
+    width: 2, height: 1, palette: ["#00000000", "#0000ffff"], pixels: [0, 1]
+  }));
+  const spriteSheet = await renderPng(createPixelDocument({
+    width: 2, height: 1, palette: ["#00000000", "#ff0000ff", "#0000ffff"], pixels: [1, 2]
+  }));
+  const initialRevision = (await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() }).then((response) => response.json()) as { revision: number }).revision;
+
+  await page.locator('input[type="file"]').setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: first });
+  await page.getByRole("button", { name: /Add Source/ }).click();
+  await expect(page.getByLabel("1 source")).toBeVisible();
+  await expect(page.locator(".source-name b").filter({ hasText: /^reference\.png$/ })).toBeVisible();
+  expect((await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() }).then((response) => response.json()) as { revision: number }).revision).toBe(initialRevision);
+
+  await page.locator('input[type="file"]').setInputFiles({ name: "reference-updated.png", mimeType: "image/png", buffer: replacement });
+  await page.getByRole("button", { name: /Replace Source/ }).click();
+  await expect(page.getByLabel("1 source")).toBeVisible();
+  await expect(page.locator(".source-name b").filter({ hasText: /^reference-updated\.png$/ })).toBeVisible();
+  await expect(page.locator(".source-name b").filter({ hasText: /^reference\.png$/ })).toHaveCount(0);
+
+  await page.locator('input[type="file"]').setInputFiles({ name: "walk-sheet.png", mimeType: "image/png", buffer: spriteSheet });
+  await page.getByRole("button", { name: /Import Sprite Sheet/ }).click();
+  const columns = page.getByLabel("Sprite sheet columns");
+  await columns.fill("2");
+  await columns.press("Tab");
+  const rows = page.getByLabel("Sprite sheet rows");
+  await rows.fill("1");
+  await rows.press("Tab");
+  await page.getByRole("button", { name: "Import 2 frames" }).click();
+  await page.getByRole("tab", { name: "Frames" }).click();
+  await expect(page.getByLabel("3 frames")).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => {
+    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
+    return (await response.json() as { document: { frames: unknown[] } }).document.frames.length;
+  }).toBe(3);
+});
+
+test("multiple AI images become ordered clip frames and export as a real GIF", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
@@ -742,18 +990,11 @@ test("multiple AI image imports share conversion settings and update the canonic
   await page.getByLabel("Canvas width").fill("24");
   await page.getByLabel("Canvas height").fill("16");
   await page.getByRole("button", { name: "Add fixed palette color" }).click();
-  await page.getByLabel("Choose fixed palette color").fill("#ff0000");
+  await page.getByLabel("Choose fixed palette color", { exact: true }).fill("#ff0000");
   await page.getByRole("button", { name: "Add color" }).click();
   await page.getByRole("button", { name: "Add fixed palette color" }).click();
-  await page.getByLabel("Choose fixed palette color").fill("#0000ff");
+  await page.getByLabel("Choose fixed palette color", { exact: true }).fill("#0000ff");
   await page.getByRole("button", { name: "Add color" }).click();
-  await page.getByRole("button", { name: "Save current preset" }).click();
-  await page.getByLabel("Canvas preset").click();
-  await page.getByRole("option", { name: "32 × 32" }).click();
-  await page.getByRole("button", { name: "Remove fixed palette color 1" }).click();
-  await page.getByRole("button", { name: "Remove fixed palette color 1" }).click();
-  await page.getByLabel("Conversion preset").click();
-  await page.getByRole("option", { name: /01 · 24×16/ }).click();
   await expect(page.getByLabel("Canvas width")).toHaveValue("24");
   await expect(page.getByLabel("Canvas height")).toHaveValue("16");
   await expect(page.getByLabel("Fixed palette color 1", { exact: true })).toHaveValue("#ff0000");
@@ -763,119 +1004,39 @@ test("multiple AI image imports share conversion settings and update the canonic
     { name: "red-ai.png", mimeType: "image/png", buffer: red },
     { name: "blue-ai.png", mimeType: "image/png", buffer: blue }
   ]);
+  await expect(page.getByRole("dialog", { name: "Choose an import purpose" })).toBeVisible();
+  await page.getByRole("button", { name: /Add as Frames/ }).click();
 
-  const sourcePicker = page.getByRole("combobox", { name: "Source asset" });
-  await expect(sourcePicker).toContainText("red-ai.png");
-  await sourcePicker.click();
-  await expect(page.getByRole("option", { name: "red-ai.png" })).toBeVisible();
-  await expect(page.getByRole("option", { name: "blue-ai.png" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  const compare = page.getByRole("button", { name: "Compare original" });
-  await expect(compare).toBeEnabled();
-  await expect(page.getByText("AI SOURCE", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("24 × 16 PX")).toBeVisible();
+  await page.getByRole("tab", { name: "Frames" }).click();
+  await expect(page.getByLabel("3 frames")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Select Frame 3 frame" })).toBeVisible();
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as {
       revision: number;
-      document: { canvas: { width: number; height: number }; palette: string[] };
+      document: { canvas: { width: number; height: number }; palette: string[]; frames: unknown[] };
     };
-    return { revision: session.revision, canvas: session.document.canvas, palette: session.document.palette };
+    return { canvas: session.document.canvas, palette: session.document.palette, frames: session.document.frames.length };
   }).toEqual({
-    revision: 8,
-    canvas: { width: 24, height: 16 },
-    palette: ["#00000000", "#ff0000ff", "#0000ffff"]
+    canvas: { width: 8, height: 6 },
+    palette: ["#00000000", "#ff7a00ff", "#00dff7ff"],
+    frames: 3
   });
 
-  await page.getByRole("button", { name: "Pen" }).click();
-  await compare.click();
-  const comparison = page.getByRole("slider", { name: "Original comparison" });
-  await expect(comparison).toBeVisible();
-  const compareCanvas = page.locator(".pixel-canvas-shell");
-  const compareBox = await compareCanvas.boundingBox();
-  if (!compareBox) throw new Error("Comparison canvas is not visible.");
-  await page.mouse.move(compareBox.x + compareBox.width * 0.5, compareBox.y + compareBox.height * 0.5);
-  await page.mouse.down();
-  await page.mouse.move(compareBox.x + compareBox.width * 0.7, compareBox.y + compareBox.height * 0.5);
-  await page.mouse.up();
-  await expect(comparison).toHaveAttribute("aria-valuenow", "70");
-  await page.mouse.click(compareBox.x + 3, compareBox.y + 3);
-  await page.waitForTimeout(100);
-  await expect.poll(async () => {
-    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
-    return (await response.json() as { revision: number }).revision;
-  }).toBe(8);
-  await page.keyboard.press("Escape");
-  await expect(comparison).toBeHidden();
-  await expect(page.getByRole("button", { name: "Pen" })).toHaveAttribute("data-icon-style", "solid");
+  await page.getByRole("button", { name: "Export" }).click();
+  await page.getByRole("button", { name: "GIF" }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Current Clip GIF" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.gif$/);
+  const downloadPath = await download.path();
+  if (!downloadPath) throw new Error("GIF download did not produce a local file.");
+  expect((await readFile(downloadPath)).subarray(0, 6).toString("ascii")).toBe("GIF89a");
 
-  await page.waitForTimeout(400);
   await page.reload();
   await expect(page.locator(".status-connected")).toBeVisible();
-  await expect(sourcePicker).toContainText("red-ai.png");
-  await sourcePicker.click();
-  await expect(page.getByRole("option", { name: "blue-ai.png" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Compare original" })).toBeEnabled();
-  await expect(page.getByText("24 × 16 PX")).toBeVisible();
-
-  await page.getByLabel("Canvas preset").click();
-  await page.getByRole("option", { name: "32 × 32" }).click();
-  const saveV1 = page.getByRole("button", { name: "Save V1" });
-  await expect(saveV1).toHaveClass(/has-changes/);
-  await expect(page.getByText("32 × 32 PX", { exact: true })).toBeVisible();
-  await expect.poll(async () => {
-    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
-    return (await response.json() as { document: { canvas: { width: number; height: number } } }).document.canvas;
-  }).toEqual({ width: 32, height: 32 });
-  await saveV1.click();
-
-  const canvas = page.locator(".pixel-canvas-shell");
-  const box = await canvas.boundingBox();
-  if (!box) throw new Error("Pixel canvas is not visible.");
-  await page.getByRole("button", { name: /Tight 100%/ }).click();
-  await expect(page.getByRole("button", { name: "Save as V2" })).toBeEnabled({ timeout: 10_000 });
-  await page.getByRole("tab", { name: "Edit" }).click();
-  await page.getByRole("button", { name: "Pen" }).click();
-  await page.mouse.click(box.x + 3, box.y + 3);
-  await page.getByRole("button", { name: "Save as V2" }).click();
-  await expect(page.locator(".variant-select", { hasText: "V2" })).toBeVisible();
-  await expect(page.locator(".variant-select")).toHaveCount(2);
-
-  await page.getByRole("tab", { name: "Convert" }).click();
-  await page.getByRole("button", { name: /Safe 80%/ }).click();
-  await expect(page.getByRole("button", { name: "Save V2" })).toBeEnabled({ timeout: 10_000 });
-  await page.getByRole("tab", { name: "Edit" }).click();
-  const replacedCanvas = page.locator(".pixel-canvas-shell");
-  const replacedBox = await replacedCanvas.boundingBox();
-  if (!replacedBox) throw new Error("Reconverted Pixel canvas is not visible.");
-  await page.getByRole("button", { name: "Eraser" }).click();
-  await page.mouse.click(replacedBox.x + replacedBox.width * 0.75, replacedBox.y + replacedBox.height * 0.25);
-  await page.getByRole("button", { name: "Save V2" }).click();
-  await expect(page.locator(".variant-select")).toHaveCount(2);
-  await expect(page.locator(".variant-select", { hasText: "V3" })).toHaveCount(0);
-
-  await expect(page.getByText("Applied", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Clean", { exact: true })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Delete red-ai.png V2" }).click();
-  let deleteAlert = page.getByRole("alert");
-  await expect(deleteAlert.getByText("Delete V2?", { exact: true })).toBeVisible();
-  await deleteAlert.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator(".variant-select", { hasText: "V2" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Delete red-ai.png V2" }).click();
-  deleteAlert = page.getByRole("alert");
-  await deleteAlert.getByRole("button", { name: "Delete" }).click();
-  await expect(page.locator(".variant-select")).toHaveCount(1);
-  await expect(page.locator(".variant-select", { hasText: "V2" })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Delete red-ai.png and all versions" }).click();
-  deleteAlert = page.getByRole("alert");
-  await expect(deleteAlert.getByText("Delete red-ai.png and 1 version?", { exact: true })).toBeVisible();
-  await deleteAlert.getByRole("button", { name: "Delete" }).click();
-  await expect(sourcePicker).toContainText("blue-ai.png");
-  await expect(page.getByRole("img", { name: "blue-ai.png source" })).toBeVisible();
+  await page.getByRole("tab", { name: "Frames" }).click();
+  await expect(page.getByLabel("3 frames")).toBeVisible();
 });
 
 test("Codex-width layout keeps the canvas visible and opens the inspector as a sheet", async ({ page, request }) => {
@@ -897,12 +1058,45 @@ test("Codex-width layout keeps the canvas visible and opens the inspector as a s
   await expect(sheet.getByRole("heading", { name: "Selection" })).toHaveCount(0);
 });
 
-async function createSession(request: APIRequestContext): Promise<{
+test("deletes a recent local project only after confirmation", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Project menu" }).click();
+  await page.getByRole("button", { name: "Save As" }).click();
+  await page.getByRole("textbox", { name: "Save As project name" }).fill("Recent Delete Test");
+  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.getByRole("navigation", { name: "Project location" })).toContainText("Recent Delete Test");
+
+  await page.getByRole("button", { name: "Project menu" }).click();
+  await page.getByRole("button", { name: "Delete Untitled Project" }).click();
+  const confirmation = page.getByRole("alert");
+  await expect(confirmation).toContainText("Delete Untitled Project?");
+  await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Delete Untitled Project" })).toHaveCount(0);
+
+  await page.reload();
+  await page.getByRole("button", { name: "Project menu" }).click();
+  await expect(page.getByRole("button", { name: "Delete Untitled Project" })).toHaveCount(0);
+});
+
+async function createSession(request: APIRequestContext, options: { normalPixels?: number[] } = {}): Promise<{
   session: { id: string };
   bootstrapToken: string;
 }> {
-  const document = JSON.parse(await readFile(fixturePath, "utf8")) as Record<string, unknown>;
-  delete document.selection;
+  const pixels = Array.from({ length: 8 * 6 }, () => 0);
+  for (const index of [10, 11, 12, 13]) pixels[index] = 1;
+  pixels[18] = 2;
+  const document = createPixelDocument({
+    id: "e2e-document",
+    width: 8,
+    height: 6,
+    palette: ["#00000000", "#ff7a00ff", "#00dff7ff"],
+    pixels
+  });
+  document.frames[0]!.id = "idle-1";
+  document.frames[0]!.name = "Idle 1";
+  document.layers[0]!.frames["idle-1"] = document.layers[0]!.frames["frame-1"]!;
+  delete document.layers[0]!.frames["frame-1"];
+  if (options.normalPixels) document.layers[0]!.normalFrames = { "idle-1": [...options.normalPixels] };
   const response = await request.post("/api/sessions", {
     headers: authorization(),
     data: { document, host: "codex" }
