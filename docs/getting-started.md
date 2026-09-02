@@ -4,29 +4,18 @@ Editable Pixel stores complete work in a Pixel Project and uses Pixel Document J
 
 ## Install
 
-With the install script on macOS or Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
-```
-
-Or with npm:
-
-```bash
-npm install --global editable-pixel
-editable-pixel --version
-```
-
-From this repository:
+The npm package is not published yet. For the current pre-release, build from this repository:
 
 ```bash
 corepack enable
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 node packages/pixel-cli/dist/cli.js --help
 ```
 
 Node.js 20.9 or newer is required.
+
+In the examples below, replace `editable-pixel` with `node packages/pixel-cli/dist/cli.js` when running from source. The [README](../README.md#run-locally) also documents the prepared npm and install-script workflows for after publication.
 
 ## Start the local editor
 
@@ -39,8 +28,6 @@ editable-pixel open
 The CLI starts the loopback server and opens a local browser session. No hosted web service receives the Project or source images.
 
 To create a named Project file first:
-
-Create a valid source-less Project:
 
 ```bash
 editable-pixel project create "Robot Pack" \
