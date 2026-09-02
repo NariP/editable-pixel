@@ -96,6 +96,37 @@ editable-pixel selection get --session <session-id>
 
 Session output includes the active Project context when the browser has connected. Closing a session revokes its bootstrap and persistent tokens. The web Canvas and MCP use the same Selection; either the user or the agent can set it.
 
+## Isometric grid and selection
+
+```text
+editable-pixel view set --session <session-id>
+  [--grid-mode square|isometric]
+  [--grid show|hide]
+
+editable-pixel selection diamond --session <session-id>
+  --center-x <0..4095> --center-y <0..4095> --width <2..4096>
+  [--height <1..4096>]
+  [--layer <id>] [--frame <id>]
+  [--mode replace|add|remove|toggle]
+```
+
+`view set` requires at least one option and a connected browser for that session. Changing the grid mode shows the grid, unless `--grid hide` is also provided. Hiding/showing alone preserves the current grid mode. Grid display is a browser view setting, not a pixel edit or exported overlay.
+
+`selection diamond` uses the same server-side selection path as MCP `set_selection` with `isometric_diamond`. Integer coordinates describe the diamond center; pixels are selected by their centers. Height defaults to half the width, rounded to the nearest integer (minimum 1); use even widths for an exact 2:1 ratio. Partial diamonds are clipped to the canvas. Empty, invalid, or over-100,000-pixel diamond results (including combined selections) are rejected without changing the session.
+
+The target defaults to the active Layer and Frame, or the first Layer/Frame without a browser context. `--mode` defaults to `replace`; `add`, `remove`, and `toggle` combine with the existing selection on that same target. Removing/toggling the entire selection clears it. Selection changes appear in the browser and share its History and Undo/Redo; they do not repaint pixels. JSON output contains the session ID, revision, and selection, not a full pixel document.
+
+```bash
+editable-pixel view set --session <session-id> --grid-mode isometric
+editable-pixel selection diamond --session <session-id> --center-x 32 --center-y 32 --width 32
+editable-pixel selection diamond --session <session-id> --center-x 48 --center-y 40 --width 32 --mode add
+editable-pixel undo --session <session-id>
+editable-pixel view set --session <session-id> --grid hide
+editable-pixel view set --session <session-id> --grid-mode square
+```
+
+This is a 2:1 guide and raster-pixel selection, not voxel conversion or a tile-map document format.
+
 ## Patches and history
 
 ```text
@@ -121,6 +152,9 @@ These Patch commands remain as a compatibility workflow. The bundled Skill uses 
 | `SERVER_NOT_RUNNING` / `SERVER_UNREACHABLE` | No usable local daemon is available |
 | `SESSION_NOT_FOUND` | The session was closed or the ID is wrong |
 | `SELECTION_REQUIRED` | Select pixels in the browser first |
+| `SELECTION_INVALID` | The requested selection is invalid, outside the canvas, or exceeds the diamond selection limit |
+| `WEB_CLIENT_REQUIRED` | Open the session in the browser before changing its grid view |
+| `SERVER_UPDATE_REQUIRED` | The running daemon predates diamond selections; save/export the Project, restart the server, and reopen it |
 | `PATCH_INVALID` | Patch coordinates, colors, or contents are invalid |
 | `REVISION_CONFLICT` | The document advanced after patch creation |
 | `FILE_CONFLICT` | The opened file changed outside the session |

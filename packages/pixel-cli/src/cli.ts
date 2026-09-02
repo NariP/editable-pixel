@@ -30,7 +30,7 @@ import {
   renderPreviewPng,
   renderSpriteSheet
 } from "@editable-pixel/renderer/node";
-import { readRegistry, registryPath } from "@editable-pixel/server";
+import { readRegistry, registryPath, type SelectionCommand, type WebControlCommand } from "@editable-pixel/server";
 import { ClientError, PixelServerClient } from "@editable-pixel/server/client";
 import { Command, CommanderError, Option } from "commander";
 import open from "open";
@@ -64,6 +64,8 @@ Examples:
   editable-pixel convert hero.png --size 32 --colors 16
   editable-pixel install-skill --host both
   editable-pixel open hero.pixel.json
+  editable-pixel view set --session <session-id> --grid-mode isometric
+  editable-pixel selection diamond --session <session-id> --center-x 32 --center-y 32 --width 32
   editable-pixel selection get --session <session-id> --json
   editable-pixel patch preview --session <session-id> --patch change.json
   editable-pixel patch apply --session <session-id> --patch change.json`);
@@ -357,7 +359,33 @@ Example:
     print(program, context, result, `Closed session ${id}.`);
   });
 
-  const selection = program.command("selection").description("Read the current browser selection.").addHelpText("after", `
+  const view = program.command("view").description("Control the connected browser's canvas guides.");
+  view.command("set")
+    .requiredOption("--session <id>")
+    .option("--grid-mode <mode>", "square or isometric (also shows the grid)")
+    .option("--grid <visibility>", "show or hide the grid without changing its mode")
+    .addHelpText("after", `
+Examples:
+  editable-pixel view set --session <session-id> --grid-mode isometric
+  editable-pixel view set --session <session-id> --grid hide`)
+    .action(async (flags: { session: string; gridMode?: string; grid?: string }) => {
+      if (flags.gridMode === undefined && flags.grid === undefined) {
+        throw new CliError("OPTION_INVALID", "Provide --grid-mode or --grid.");
+      }
+      const command: WebControlCommand = {
+        type: "set_view",
+        ...(flags.gridMode !== undefined
+          ? { gridMode: enumValue(flags.gridMode, ["square", "isometric"] as const, "grid-mode") }
+          : {}),
+        ...(flags.grid !== undefined
+          ? { showGrid: enumValue(flags.grid, ["show", "hide"] as const, "grid") === "show" }
+          : {})
+      };
+      const result = await (await PixelServerClient.connect()).executeWebCommand(flags.session, command);
+      print(program, context, result, "Updated the connected browser's grid view.");
+    });
+
+  const selection = program.command("selection").description("Read or update the shared browser selection.").addHelpText("after", `
 Example:
   editable-pixel selection get --session <session-id> --json`);
   selection.command("get").requiredOption("--session <id>").addHelpText("after", `
@@ -366,6 +394,43 @@ Example:
     const result = await (await PixelServerClient.connect()).getSelection(flags.session);
     print(program, context, result, result.selection ? `Selection ${result.selection.type} ${result.selection.x},${result.selection.y} ${result.selection.width}×${result.selection.height}${result.selection.type === "mask" ? ` · ${result.selection.indices.length} pixels` : ""}` : "No active selection. Click [SELECT AREA] in the editor first.");
   });
+
+  selection.command("diamond")
+    .description("Select a pixel-exact isometric diamond using the shared Selection tool and History.")
+    .requiredOption("--session <id>")
+    .requiredOption("--center-x <pixels>", "diamond center x coordinate")
+    .requiredOption("--center-y <pixels>", "diamond center y coordinate")
+    .requiredOption("--width <pixels>", "diamond width")
+    .option("--height <pixels>", "diamond height (defaults to half the width, rounded)")
+    .option("--layer <id>", "target layer (defaults to the active layer)")
+    .option("--frame <id>", "target frame (defaults to the active frame)")
+    .option("--mode <mode>", "replace, add, remove, or toggle", "replace")
+    .addHelpText("after", `
+Example:
+  editable-pixel selection diamond --session <session-id> --center-x 32 --center-y 32 --width 32 --json
+
+Clips to the canvas. Nonintersecting diamonds or over-100,000-pixel results are rejected without changing the session.
+Selection changes share Undo/Redo with the web editor; they do not repaint pixels.`)
+    .action(async (flags: {
+      session: string; centerX: string; centerY: string; width: string; height?: string;
+      layer?: string; frame?: string; mode: string;
+    }) => {
+      const command: SelectionCommand = {
+        type: "isometric_diamond",
+        centerX: integer(flags.centerX, "center-x", 0, 4095),
+        centerY: integer(flags.centerY, "center-y", 0, 4095),
+        width: integer(flags.width, "width", 2, 4096),
+        ...(flags.height !== undefined ? { height: integer(flags.height, "height", 1, 4096) } : {}),
+        ...(flags.layer !== undefined ? { layerId: flags.layer } : {}),
+        ...(flags.frame !== undefined ? { frameId: flags.frame } : {}),
+        mode: enumValue(flags.mode, ["replace", "add", "remove", "toggle"] as const, "mode")
+      };
+      const result = await (await PixelServerClient.connect()).setSelectionCommand(flags.session, command);
+      print(program, context, { sessionId: result.id, revision: result.revision, selection: result.selection ?? null },
+        result.selection
+          ? `Selected ${result.selection.type} at ${result.selection.x},${result.selection.y} ${result.selection.width}×${result.selection.height}. Revision ${result.revision}.`
+          : `Selection cleared. Revision ${result.revision}.`);
+    });
 
   const patch = program.command("patch").description("Preview, explicitly apply, or reject an agent patch.").addHelpText("after", `
 Examples:

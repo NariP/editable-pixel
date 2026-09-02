@@ -154,9 +154,39 @@ describe("Editable Pixel MCP", () => {
     expect(harness.server.store.get(harness.sessionId).document.layers[0]!.frames["frame-1"]![3]).toBe(0);
     await harness.close();
   });
+
+  it("maps a 2:1 isometric diamond to the canonical browser Selection", async () => {
+    const harness = await createHarness(8, 4);
+    const selected = await harness.mcpClient.callTool({
+      name: "set_selection",
+      arguments: {
+        session_id: harness.sessionId,
+        command: {
+          type: "isometric_diamond",
+          center_x: 4,
+          center_y: 2,
+          width: 8,
+          height: 4,
+          mode: "replace"
+        },
+        response_format: "json"
+      }
+    }) as CallToolResult;
+
+    expect(selected.isError).not.toBe(true);
+    expect(harness.server.store.get(harness.sessionId).selection).toMatchObject({
+      type: "mask",
+      x: 1,
+      y: 0,
+      width: 6,
+      height: 4
+    });
+    expect(harness.server.store.get(harness.sessionId).selection).toHaveProperty("indices", expect.any(Array));
+    await harness.close();
+  });
 });
 
-async function createHarness() {
+async function createHarness(width = 2, height = 2) {
   const server = await startPixelServer();
   running.push(server);
   const apiClient = new PixelServerClient({
@@ -165,7 +195,7 @@ async function createHarness() {
     daemonToken: server.daemonToken,
     startedAt: new Date().toISOString()
   });
-  const created = await apiClient.createSession({ document: createPixelDocument({ width: 2, height: 2 }) });
+  const created = await apiClient.createSession({ document: createPixelDocument({ width, height }) });
   const mcpServer = createEditablePixelMcpServer(async () => apiClient);
   const mcpClient = new Client({ name: "editable-pixel-test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

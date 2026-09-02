@@ -240,6 +240,30 @@ describe("SessionStore", () => {
     expect(store.get(created.session.id).document.layers[0]!.frames["frame-1"]!.filter((pixel) => pixel === 1)).toHaveLength(4);
   });
 
+  it("creates immediate AI actions from the latest Project revision after an in-flight selection update", async () => {
+    const store = new SessionStore();
+    const project = createPixelProject({ id: "project-concurrent-selection", name: "Concurrent selection" });
+    const created = await store.create({ project, host: "codex" });
+
+    const action = store.executeAction(created.session.id, {
+      action: { type: "add_layer", name: "AI Highlights" },
+      reason: "Add highlights after selecting the target"
+    });
+    store.setSelectionCommand(created.session.id, {
+      type: "rect",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      mode: "replace"
+    });
+
+    await expect(action).resolves.toMatchObject({ revision: 2 });
+    const snapshot = store.get(created.session.id);
+    expect(snapshot.document.selection).toMatchObject({ x: 0, y: 0, width: 1, height: 1 });
+    expect(snapshot.document.layers.map((layer) => layer.name)).toContain("AI Highlights");
+  });
+
   it("uses the active Project Layer and Frame for unqualified AI pixel actions", async () => {
     const store = new SessionStore();
     const project = createPixelProject({ id: "project-active-target", name: "Active target" });

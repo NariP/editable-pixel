@@ -607,6 +607,28 @@ describe("Editable Pixel web editor", () => {
     expect(screen.queryByRole("option", { name: "Local remove" })).toBeNull();
   });
 
+  it("explains that Pixel JSON cannot use source conversion controls", async () => {
+    render(<App />);
+    const serialized = JSON.stringify(createPixelDocument({ width: 8, height: 8 }));
+    const pixelJson = new File(
+      [serialized],
+      "robot.pixel.json",
+      { type: "application/json" }
+    );
+    Object.defineProperty(pixelJson, "text", { value: async () => serialized });
+
+    fireEvent.change(screen.getByLabelText("Import files"), { target: { files: [pixelJson] } });
+    fireEvent.click(screen.getByRole("button", { name: /Replace Canvas/ }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Sources/ }).textContent).toContain("1 retained source"));
+    expect(await screen.findByText("Image source required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Tight 100%/ }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("slider", { name: "Content frame scale" }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("combobox", { name: "Canvas preset" }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("combobox", { name: "Conversion preset" }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Save current preset" }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
+  });
+
   it("explains Background and Dither from their labels", () => {
     render(<App />);
 

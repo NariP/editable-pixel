@@ -6,7 +6,7 @@ Use these tools only with an open connected browser session. Call `get_web_conte
 
 One call applies one semantic browser action:
 
-- `set_view`: tab, inspector, Project Sources disclosure, tool, Color/Normal map, Normal brush value, Normal/Lit preview, palette color, grid, light marker, original comparison, canvas background, zoom, Fit.
+- `set_view`: tab, inspector, Project Sources disclosure, tool, Color/Normal map, Normal brush value, Normal/Lit preview, palette color, square/isometric grid, light marker, original comparison, canvas background, zoom, Fit.
 - `set_active`: active Source, Clip, Frame, or Layer.
 - `set_playback`, `set_onion_skin`: motion preview state.
 - `set_conversion`: canvas, colors, Content Frame scale, anchor, dither, background, or fixed palette. A retained Source reconverts through the same live preview path.

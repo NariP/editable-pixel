@@ -128,7 +128,18 @@ Editable Pixel의 편집기·변환·렌더링은 로컬에서 실행됩니다. 
 3. **편집:** 픽셀과 Layers를 수정하고, Frames를 Clips로 묶고, 프레임 시간·재생·Onion Skin을 조절합니다. Color·Normal 편집과 Smooth·Toon Palette 조명을 사용할 수 있습니다.
 4. **내보내기:** Color PNG, Normal PNG, 조명이 적용된 Lit PNG, GIF, Sprite Sheet, 편집용 Pixel JSON, 전체 Project를 지원합니다. 정수 배율로 픽셀 경계를 선명하게 유지합니다.
 
-**실험 기능:** 2:1 아이소메트릭 가이드와 AI의 다이아몬드 타일 선택은 기본 작업 흐름과 별도로 개발 중입니다.
+## 아이소메트릭 가이드
+
+캔버스 툴바에서 **2:1 isometric grid**로 전환하면 2:1 가이드가 표시됩니다. CLI 또는 Codex·Claude MCP로 다이아몬드 타일을 선택한 뒤 기존 픽셀·팔레트·조명·내보내기 기능을 그대로 사용할 수 있습니다.
+
+```bash
+editable-pixel view set --session <session-id> --grid-mode isometric
+editable-pixel selection diamond --session <session-id> --center-x 32 --center-y 32 --width 32
+```
+
+타일 높이는 기본적으로 너비의 절반입니다. 선택은 기존 Selection 도구에 표시되며 Undo/Redo를 공유합니다. 그리드 전환은 해당 세션의 브라우저가 연결되어 있어야 합니다. 소스 빌드로 실행한다면 `editable-pixel` 대신 `node packages/pixel-cli/dist/cli.js`를 사용하세요.
+
+정사각형 픽셀 위에 겹치는 가이드이며, 복셀 모델·자동 원근 변환·타일맵 포맷은 아닙니다. 표시 여부, 대상 Layer·Frame, 선택 합치기 옵션은 [CLI 레퍼런스](./docs/cli.md#isometric-grid-and-selection)를 참고하세요.
 
 ## 무엇이 저장되나요?
 

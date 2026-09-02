@@ -113,7 +113,16 @@ export class PixelServerClient {
     return this.request(`/api/sessions/${encodeURIComponent(id)}/history?limit=${limit}`);
   }
 
-  setSelectionCommand(id: string, command: SelectionCommand): Promise<SessionSnapshot> {
+  async setSelectionCommand(id: string, command: SelectionCommand): Promise<SessionSnapshot> {
+    if (command.type === "isometric_diamond") {
+      const health = await this.request<{ features?: string[] }>("/api/health");
+      if (!health.features?.includes("isometric-selection")) {
+        throw new ClientError(
+          "SERVER_UPDATE_REQUIRED",
+          "The running server predates isometric selections. Save/export your Project, restart the local server, and reopen it."
+        );
+      }
+    }
     return this.request(`/api/sessions/${encodeURIComponent(id)}/selection-command`, {
       method: "POST",
       body: { command }

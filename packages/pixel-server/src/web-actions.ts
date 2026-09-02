@@ -28,6 +28,7 @@ export type WebControlCommand =
     normalValue?: number;
     colorIndex?: number;
     showGrid?: boolean;
+    gridMode?: "square" | "isometric";
     showLightMarker?: boolean;
     compareMode?: boolean;
     canvasBackground?: string;
