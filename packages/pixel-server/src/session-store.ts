@@ -616,6 +616,15 @@ export class SessionStore {
   ): Promise<SessionSnapshot> {
     const session = this.require(id);
     await this.assertFileUnchanged(session);
+    return this.applyVerifiedPatch(session, patchOrId, actor, client);
+  }
+
+  private async applyVerifiedPatch(
+    session: SessionRecord,
+    patchOrId: Patch | string,
+    actor: EditActor,
+    client?: string
+  ): Promise<SessionSnapshot> {
     const patch = typeof patchOrId === "string" ? session.pending.get(patchOrId)?.patch : patchOrId;
     if (!patch) throw new SessionError("PATCH_NOT_FOUND", "Preview the patch again before applying it.", 404);
     assertPatchLimit(patch);
@@ -674,12 +683,13 @@ export class SessionStore {
         await this.persist(session);
         return snapshot(session);
       }
+      await this.assertFileUnchanged(session);
       const fallback = {
         layerId: session.projectContext?.layerId ?? session.document.layers[0]!.id,
         frameId: session.projectContext?.frameId ?? session.document.frames[0]!.id
       };
       const patch = createActionPatch(session.document, input.action, input.reason, fallback);
-      return await this.applyPatch(id, patch, input.actor ?? "ai", input.client ?? "mcp");
+      return await this.applyVerifiedPatch(session, patch, input.actor ?? "ai", input.client ?? "mcp");
     } catch (error) {
       if (error instanceof SessionError) throw error;
       throw new SessionError(

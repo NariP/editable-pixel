@@ -71,6 +71,7 @@ Compatibility tools `get_session`, `get_project_context`, `get_document_summary`
 
 - `rect`: an exact rectangle
 - `pixels`: a non-contiguous coordinate mask
+- `isometric_diamond`: a 2:1 top-face mask centered on exact canvas coordinates
 - `color`: every use of one palette index in the target Layer/Frame
 - `connected`: a four-way connected component
 - `outline`: visible boundary pixels
@@ -78,6 +79,8 @@ Compatibility tools `get_session`, `get_project_context`, `get_document_summary`
 - `clear`: remove the Selection
 
 The modes `replace`, `add`, `remove`, and `toggle` match the web Selection behavior. Selection changes are document transactions, appear immediately through WebSocket, and participate in Undo/Redo.
+
+The connected editor can switch between square and 2:1 isometric guides through `control_web.set_view`. Isometric mode is a projection guide over the same square-pixel document, so existing Color, Normal, Frame, History, and export actions remain unchanged.
 
 ## Immediate editing
 

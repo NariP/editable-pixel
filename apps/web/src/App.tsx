@@ -67,7 +67,7 @@ import {
 import {
   TbAdjustments, TbArrowBackUp, TbArrowDown, TbArrowForwardUp, TbArrowLeft, TbArrowRight, TbArrowUp,
   TbChevronDown, TbChevronRight, TbColorPicker, TbCopy, TbCurrentLocation, TbDeviceFloppy, TbDownload, TbFileImport, TbFilePlus, TbFileTypePng,
-  TbColumns2, TbColumns2Filled, TbFlipHorizontal, TbFlipVertical, TbGridDots, TbJson, TbMaximize,
+  TbColumns2, TbColumns2Filled, TbDiamond, TbFlipHorizontal, TbFlipVertical, TbGridDots, TbJson, TbMaximize,
   TbBulb, TbBulbOff, TbEye, TbEyeOff, TbFolderOpen, TbGripVertical, TbKeyframe, TbKeyframeFilled, TbLayersIntersect, TbPalette, TbPhotoOff, TbPlayerPlay, TbPlayerStop, TbPlus, TbRefresh, TbStack,
   TbPointerPlus, TbQuestionMark, TbSphere, TbSun, TbTrash, TbX, TbZoomIn, TbZoomOut
 } from "react-icons/tb";
@@ -82,7 +82,7 @@ import { Sheet, SheetContent, SheetTitle } from "./components/ui/sheet.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip.js";
 import { downloadAnimationGif, downloadDocument, downloadLitPng, downloadLitSpriteSheet, downloadNormalPng, downloadNormalSpriteSheet, downloadPng, downloadProject, downloadSpriteSheet } from "./export.js";
-import { PixelCanvas, type EditMapMode, type NormalPreviewMode, type OnionSkinSettings, type Tool } from "./PixelCanvas.js";
+import { PixelCanvas, type EditMapMode, type GridMode, type NormalPreviewMode, type OnionSkinSettings, type Tool } from "./PixelCanvas.js";
 import { usePixelSession, type ConnectionStatus } from "./session.js";
 import {
   cloneSettings, createWorkspaceKey, deleteRecentProject, listRecentProjects, loadWorkspace, restoreEmbeddedProjectSources, restoreSourceUrls, saveWorkspace, settingsEqual,
@@ -255,6 +255,7 @@ export function App() {
   const [fitRequest, setFitRequest] = useState(0);
   const [selectionFitRequest, setSelectionFitRequest] = useState(0);
   const [showGrid, setShowGrid] = useState(true);
+  const [gridMode, setGridMode] = useState<GridMode>("square");
   const [showLightMarker, setShowLightMarker] = useState(true);
   const [onionSkin, setOnionSkin] = useState<OnionSkinSettings>({
     previous: 1,
@@ -448,6 +449,13 @@ export function App() {
 
   const activeClip = project.clips.find((clip) => clip.id === project.active?.clipId) ?? project.clips[0]!;
   const activeSource = sources.find((source) => source.id === activeSourceId) ?? sources[0];
+  const activeProjectSource = project.sources.find((source) => source.id === activeSource?.id);
+  const hasConvertibleImageSource = Boolean(activeSource && sourceFramesFor(activeSource).length > 0);
+  const conversionUnavailable = !hasConvertibleImageSource && Boolean(
+    activeProjectSource?.kind === "pixel-json"
+    || pixelDocument.metadata.conversion
+    || pixelDocument.metadata.source
+  );
   const appliedSettings = settingsFromDocument(project.document, defaultSettings);
   const settingsChanged = Boolean(activeSource) && !settingsEqual(draftSettings, appliedSettings);
   const previewForActiveSource = conversionPreview
@@ -1821,6 +1829,7 @@ export function App() {
           normalPreview,
           normalValue,
           showGrid,
+          gridMode,
           showLightMarker,
           compareMode,
           canvasBackground,
@@ -1862,6 +1871,10 @@ export function App() {
           throw new Error(`Palette index ${command.colorIndex} is out of range.`);
         }
         setColorIndex(command.colorIndex);
+      }
+      if (command.gridMode !== undefined) {
+        setGridMode(command.gridMode);
+        setShowGrid(true);
       }
       if (command.showGrid !== undefined) setShowGrid(command.showGrid);
       if (command.showLightMarker !== undefined) setShowLightMarker(command.showLightMarker);
@@ -2084,7 +2097,13 @@ export function App() {
 
         <TabsContent value="convert">
 
+        {conversionUnavailable && <div className="conversion-unavailable" role="status">
+          <TbPhotoOff />
+          <span><b>Image source required</b><small>Pixel JSON is already converted. Add or select a retained image to use Convert and Content Frame.</small></span>
+        </div>}
+
         <InspectorSection icon={TbAdjustments} title="Normalize">
+          <fieldset className="conversion-control-group" disabled={conversionUnavailable}>
           <Field label="Canvas"><SelectControl ariaLabel="Canvas preset" value={customCanvas ? "custom" : String(draftSettings.canvasWidth)} options={canvasOptions} onValueChange={(value) => {
             if (value === "custom") setCustomCanvas(true);
             else { const size = +value; setCustomCanvas(false); updateDraftSettings((current) => ({ ...current, canvasWidth: size, canvasHeight: size })); }
@@ -2117,9 +2136,11 @@ export function App() {
               {!!draftSettings.palette?.length && <small>{`${draftSettings.palette.length} fixed color${draftSettings.palette.length === 1 ? "" : "s"} · transparency added automatically`}</small>}
             </div>
           </Field>
+          </fieldset>
         </InspectorSection>
 
         <InspectorSection icon={TbMaximize} title="Content Frame">
+          <fieldset className="conversion-control-group" disabled={conversionUnavailable}>
           <div className="frame-preset-actions" aria-label="Content frame presets">
             <button type="button" onClick={() => setFramePreset("tight")}>Tight<small>100%</small></button>
             <button type="button" onClick={() => setFramePreset("safe")}>Safe<small>80%</small></button>
@@ -2132,11 +2153,14 @@ export function App() {
               <b aria-hidden="true">%</b>
             </label>
           </div>
+          </fieldset>
         </InspectorSection>
 
         <InspectorSection icon={TbDeviceFloppy} title="Presets">
+          <fieldset className="conversion-control-group" disabled={conversionUnavailable}>
           <Field label="Saved Preset"><SelectControl ariaLabel="Conversion preset" value={null} placeholder="Choose…" options={presets.map((preset, index) => ({ value: String(index), label: `${String(index + 1).padStart(2, "0")} · ${preset.canvasWidth}×${preset.canvasHeight} · ${preset.palette?.length ?? preset.colorCount}C` }))} onValueChange={(value) => loadPreset(+value)} /></Field>
           <Button variant="outline" className="w-full" onClick={savePreset}>Save current preset</Button>
+          </fieldset>
         </InspectorSection>
 
       </TabsContent>
@@ -2376,10 +2400,10 @@ export function App() {
 
       <section className="workbench">
         <section className="canvas-column">
-          <div className="canvas-toolbar"><span className="toolbar-frame" title={displayFrameLabel}>{displayFrameLabel}</span><span className="toolbar-separator">/</span><span className="toolbar-layer" title={displayLayer.name}>{displayLayer.name}</span>{editMap === "normal" && <><span className="toolbar-separator">/</span><span className="toolbar-map">Normal · {normalPreview === "lit" ? "Lit" : "Map"}</span></>}<div className="toolbar-spacer" /><div className="history-control"><IconButton label="Undo" icon={TbArrowBackUp} onClick={undo} disabled={!sessionId && !historyRef.current.canUndo} /><IconButton label="Redo" icon={TbArrowForwardUp} onClick={redo} disabled={!sessionId && !historyRef.current.canRedo} /></div><div className="view-control"><IconButton label="Toggle grid" icon={TbGridDots} active={showGrid} aria-pressed={showGrid} onClick={() => setShowGrid((current) => !current)} />{editMap === "normal" && normalPreview === "lit" && <IconButton label={showLightMarker ? "Hide light marker" : "Show light marker"} icon={showLightMarker ? TbBulb : TbBulbOff} active={showLightMarker} aria-pressed={showLightMarker} onClick={() => setShowLightMarker((current) => !current)} />}<IconButton label="Compare original" icon={compareMode ? TbColumns2Filled : TbColumns2} className={compareMode ? "view-active" : ""} aria-pressed={compareMode} title={activeOriginalFrame?.sourceUrl ? "Compare original" : "Original unavailable"} onClick={() => setCompareMode((current) => activeOriginalFrame?.sourceUrl && editMap === "color" ? !current : false)} disabled={!activeOriginalFrame?.sourceUrl || editMap === "normal"} /></div><div className="zoom-control"><IconButton label="Zoom out" icon={TbZoomOut} onClick={() => setZoom((current) => Math.max(1, current - 1))} /><span>{Math.round(zoom * 100)}%</span><IconButton label="Zoom in" icon={TbZoomIn} onClick={() => setZoom((current) => Math.min(48, current + 1))} /></div><Button size="sm" variant="ghost" onClick={() => setFitRequest((current) => current + 1)}>Fit</Button></div>
+          <div className="canvas-toolbar"><span className="toolbar-frame" title={displayFrameLabel}>{displayFrameLabel}</span><span className="toolbar-separator">/</span><span className="toolbar-layer" title={displayLayer.name}>{displayLayer.name}</span>{editMap === "normal" && <><span className="toolbar-separator">/</span><span className="toolbar-map">Normal · {normalPreview === "lit" ? "Lit" : "Map"}</span></>}<div className="toolbar-spacer" /><div className="history-control"><IconButton label="Undo" icon={TbArrowBackUp} onClick={undo} disabled={!sessionId && !historyRef.current.canUndo} /><IconButton label="Redo" icon={TbArrowForwardUp} onClick={redo} disabled={!sessionId && !historyRef.current.canRedo} /></div><div className="view-control"><IconButton label="Square grid" icon={TbGridDots} active={showGrid && gridMode === "square"} aria-pressed={showGrid && gridMode === "square"} onClick={() => { const active = showGrid && gridMode === "square"; setGridMode("square"); setShowGrid(!active); }} /><IconButton label="2:1 isometric grid" icon={TbDiamond} active={showGrid && gridMode === "isometric"} aria-pressed={showGrid && gridMode === "isometric"} onClick={() => { const active = showGrid && gridMode === "isometric"; setGridMode("isometric"); setShowGrid(!active); }} />{editMap === "normal" && normalPreview === "lit" && <IconButton label={showLightMarker ? "Hide light marker" : "Show light marker"} icon={showLightMarker ? TbBulb : TbBulbOff} active={showLightMarker} aria-pressed={showLightMarker} onClick={() => setShowLightMarker((current) => !current)} />}<IconButton label="Compare original" icon={compareMode ? TbColumns2Filled : TbColumns2} className={compareMode ? "view-active" : ""} aria-pressed={compareMode} title={activeOriginalFrame?.sourceUrl ? "Compare original" : "Original unavailable"} onClick={() => setCompareMode((current) => activeOriginalFrame?.sourceUrl && editMap === "color" ? !current : false)} disabled={!activeOriginalFrame?.sourceUrl || editMap === "normal"} /></div><div className="zoom-control"><IconButton label="Zoom out" icon={TbZoomOut} onClick={() => setZoom((current) => Math.max(1, current - 1))} /><span>{Math.round(zoom * 100)}%</span><IconButton label="Zoom in" icon={TbZoomIn} onClick={() => setZoom((current) => Math.min(48, current + 1))} /></div><Button size="sm" variant="ghost" onClick={() => setFitRequest((current) => current + 1)}>Fit</Button></div>
 
           <div className="canvas-surface" aria-busy={isPreviewing}>
-            <PixelCanvas document={displayDocument} layerId={displayLayerId} frameId={displayFrameId} tool={tool} colorIndex={colorIndex} editMap={editMap} normalValue={normalValue} normalPreview={normalPreview} light={light} showLightMarker={showLightMarker} zoom={zoom} showGrid={showGrid} onionSkin={resolveCanvasOnionSkin(onionSkin, activeClip.frameIds, playing)} canvasBackground={canvasBackground} referenceImageUrl={activeOriginalFrame?.sourceUrl} compareMode={compareMode} colorPickMode={editMap === "color" && Boolean(colorPickTarget)} keyboardTarget={keyboardTarget === "canvas"} fitRequest={fitRequest} selectionFitRequest={selectionFitRequest} onFitZoom={setZoom} onZoom={setZoom} onActivate={() => setKeyboardTarget("canvas")} onEdit={commit} onSelection={setSelection} onLightPosition={(x, y) => previewLighting({ x, y })} onLightCommit={(x, y) => commitLighting({ ...lightRef.current, x, y })} onPickColor={(color) => {
+            <PixelCanvas document={displayDocument} layerId={displayLayerId} frameId={displayFrameId} tool={tool} colorIndex={colorIndex} editMap={editMap} normalValue={normalValue} normalPreview={normalPreview} light={light} showLightMarker={showLightMarker} zoom={zoom} showGrid={showGrid} gridMode={gridMode} onionSkin={resolveCanvasOnionSkin(onionSkin, activeClip.frameIds, playing)} canvasBackground={canvasBackground} referenceImageUrl={activeOriginalFrame?.sourceUrl} compareMode={compareMode} colorPickMode={editMap === "color" && Boolean(colorPickTarget)} keyboardTarget={keyboardTarget === "canvas"} fitRequest={fitRequest} selectionFitRequest={selectionFitRequest} onFitZoom={setZoom} onZoom={setZoom} onActivate={() => setKeyboardTarget("canvas")} onEdit={commit} onSelection={setSelection} onLightPosition={(x, y) => previewLighting({ x, y })} onLightCommit={(x, y) => commitLighting({ ...lightRef.current, x, y })} onPickColor={(color) => {
               const normalized = normalizePaletteColor(color);
               const existingIndex = pixelDocument.palette.findIndex((candidate) => normalizePaletteColor(candidate) === normalized);
               if (colorPickTarget === "edit") {
@@ -2542,8 +2566,8 @@ function SelectionDock({ onAction }: { onAction: (action: SelectionAction) => vo
       { action: "clear", label: "Clear selected pixels", icon: TbTrash }
     ],
     [
-      { action: "flip-h", label: "Flip selection horizontally", icon: TbFlipHorizontal },
-      { action: "flip-v", label: "Flip selection vertically", icon: TbFlipVertical }
+      { action: "flip-h", label: "Flip selection horizontally", icon: TbFlipVertical },
+      { action: "flip-v", label: "Flip selection vertically", icon: TbFlipHorizontal }
     ]
   ];
   return <TooltipProvider delayDuration={250}><div className="selection-dock" role="toolbar" aria-label="Selection actions">{groups.map((group) => <div className="selection-dock-group" key={group[0]!.action}>{group.map(({ action, label, icon: Icon }) => <Tooltip key={action}><TooltipTrigger asChild><Button size="icon" variant="ghost" aria-label={label} onClick={() => onAction(action)}><Icon /></Button></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>)}</div>)}</div></TooltipProvider>;

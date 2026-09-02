@@ -18,6 +18,7 @@ Call `set_selection` when the requested target is known:
 
 - `rect`: exact x, y, width, height.
 - `pixels`: non-contiguous coordinate mask.
+- `isometric_diamond`: a browser-visible 2:1 tile mask centered at `center_x`, `center_y`; pass `width` and normally use `height = width / 2`.
 - `color`: every matching palette index in the target Layer/Frame.
 - `connected`: four-way connected component at x, y.
 - `outline`: visible boundary pixels.
@@ -25,6 +26,8 @@ Call `set_selection` when the requested target is known:
 - `clear`: remove selection.
 
 Use `replace` normally. Use `add`, `remove`, or `toggle` only when extending the current selection. The web Canvas displays the same canonical Selection immediately.
+
+For isometric work, first call `control_web { type: "set_view", show_grid: true, grid_mode: "isometric" }`. The guide is a 2:1 projection over the existing square-pixel document, so every selected and painted result remains an exact raster pixel. Use `isometric_diamond` for a top face, then reuse the ordinary pixel, normal, palette, motion, History, and export actions. Do not describe the guide as a voxel model or a tile-map data conversion.
 
 ## Apply immediately
 

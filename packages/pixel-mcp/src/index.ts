@@ -43,6 +43,15 @@ const selectionCommandSchema = z.discriminatedUnion("type", [
     mode: selectionMode
   }).strict(),
   z.object({
+    type: z.literal("isometric_diamond"),
+    center_x: z.number().int().min(0).max(4095).describe("Diamond center on the pixel canvas x axis."),
+    center_y: z.number().int().min(0).max(4095).describe("Diamond center on the pixel canvas y axis."),
+    width: z.number().int().min(2).max(4096).describe("Diamond width in canvas pixels. Use twice the height for a 2:1 tile."),
+    height: z.number().int().min(1).max(4096).optional().describe("Diamond height in canvas pixels. Defaults to half the width."),
+    ...targetFields,
+    mode: selectionMode
+  }).strict(),
+  z.object({
     type: z.literal("color"),
     color_index: z.number().int().min(0).max(255),
     ...targetFields,
@@ -144,6 +153,7 @@ const webControlSchema = z.discriminatedUnion("type", [
     normal_value: z.number().int().min(0).max(0xffffff).optional(),
     color_index: z.number().int().min(0).max(255).optional(),
     show_grid: z.boolean().optional(),
+    grid_mode: z.enum(["square", "isometric"]).optional(),
     show_light_marker: z.boolean().optional(),
     compare_mode: z.boolean().optional(),
     canvas_background: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
@@ -329,7 +339,7 @@ export function createEditablePixelMcpServer(
 
   server.registerTool("set_selection", {
     title: "Set Browser-Visible Pixel Selection",
-    description: "Set, add, remove, toggle, or clear the canonical Selection using a rectangle, coordinates, palette color, connected component, visible outline, or content bounds. The existing web Selection Tool updates immediately.",
+    description: "Set, add, remove, toggle, or clear the canonical Selection using a rectangle, coordinates, a 2:1 isometric diamond, palette color, connected component, visible outline, or content bounds. The existing web Selection Tool updates immediately.",
     inputSchema: z.object({
       session_id: sessionId,
       command: selectionCommandSchema,
@@ -338,10 +348,9 @@ export function createEditablePixelMcpServer(
     outputSchema: universalOutput,
     annotations: writeAnnotations
   }, async ({ session_id, command, response_format }) => tool(async () => {
-    const data = await (await connect()).setSelectionCommand(
-      session_id,
-      normalizeSelectionCommand(command) as SelectionCommand
-    );
+    const client = await connect();
+    const normalized = normalizeSelectionCommand(command) as SelectionCommand;
+    const data = await client.setSelectionCommand(session_id, normalized);
     return result(
       data,
       response_format,
@@ -758,9 +767,13 @@ function normalizeSelectionCommand(command: Record<string, unknown>): Record<str
     ...(command.layer_id ? { layerId: command.layer_id } : {}),
     ...(command.frame_id ? { frameId: command.frame_id } : {}),
     ...(command.color_index !== undefined ? { colorIndex: command.color_index } : {}),
+    ...(command.center_x !== undefined ? { centerX: command.center_x } : {}),
+    ...(command.center_y !== undefined ? { centerY: command.center_y } : {}),
     layer_id: undefined,
     frame_id: undefined,
-    color_index: undefined
+    color_index: undefined,
+    center_x: undefined,
+    center_y: undefined
   };
 }
 
@@ -807,6 +820,7 @@ function normalizeWebCommand(action: Record<string, unknown>): Record<string, un
     ["normal_value", "normalValue"],
     ["color_index", "colorIndex"],
     ["show_grid", "showGrid"],
+    ["grid_mode", "gridMode"],
     ["show_light_marker", "showLightMarker"],
     ["compare_mode", "compareMode"],
     ["canvas_background", "canvasBackground"],

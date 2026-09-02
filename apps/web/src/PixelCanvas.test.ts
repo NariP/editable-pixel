@@ -1,7 +1,19 @@
 import { createPixelDocument } from "@editable-pixel/document";
 import { describe, expect, it } from "vitest";
 
-import { renderOnionSkinRgba } from "./PixelCanvas.js";
+import { isometricGridPath, renderOnionSkinRgba } from "./PixelCanvas.js";
+
+describe("isometric grid", () => {
+  it("builds both 2:1 diagonal line families with separate major guides", () => {
+    const minor = isometricGridPath(32, 32, false);
+    const major = isometricGridPath(32, 32, true);
+
+    expect(minor).toContain("M 0 8 L 32 24");
+    expect(minor).toContain("M 0 8 L 32 -8");
+    expect(major).toContain("M 0 0 L 32 16");
+    expect(major).toContain("M 0 0 L 32 -16");
+  });
+});
 
 describe("onion skin rendering", () => {
   it("tints the previous frame orange without including the active frame", () => {

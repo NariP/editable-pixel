@@ -1,9 +1,59 @@
 import { NEUTRAL_NORMAL, createPixelDocument } from "@editable-pixel/document";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { expect, test, type APIRequestContext } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 const daemonToken = "editable-pixel-e2e-daemon-token";
+test("CLI isometric controls update the visible grid and shared selection history", async ({ page, request }) => {
+  const created = await createSession(request);
+  const directory = await mkdtemp(join(tmpdir(), "editable-pixel-cli-e2e-"));
+  const registry = join(directory, "server.json");
+  await writeFile(registry, JSON.stringify({
+    pid: process.pid, port: 4178, daemonToken, startedAt: new Date().toISOString()
+  }), { mode: 0o600 });
+  const cli = async (...args: string[]) => {
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      resolve("packages/pixel-cli/dist/cli.js"), "--json", ...args, "--session", created.session.id
+    ], { env: { ...process.env, EDITABLE_PIXEL_REGISTRY: registry } });
+    return JSON.parse(stdout);
+  };
+  try {
+    await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+    await expect(page.locator(".status-connected")).toBeVisible();
+    await cli("view", "set", "--grid-mode", "isometric");
+    await expect(page.getByLabel("2 to 1 isometric guide")).toBeVisible();
+    await expect(page.locator(".pixel-grid-square")).toHaveCount(0);
+
+    const selected = await cli("selection", "diamond", "--center-x", "4", "--center-y", "3", "--width", "8");
+    expect(selected.selection).toMatchObject({ type: "mask", x: 1, y: 1, width: 6, height: 4, frameId: "idle-1" });
+    await expect(page.getByLabel("16 selected pixels")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Select", exact: true })).toHaveAttribute("aria-pressed", "true");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.locator(".selection-mask-overlay")).toHaveCount(0);
+    await cli("redo");
+    await expect(page.getByLabel("16 selected pixels")).toBeVisible();
+    const historyResponse = await request.get(`/api/sessions/${created.session.id}/history`, { headers: authorization() });
+    expect((await historyResponse.json()).entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: "ai", client: "cli" })
+    ]));
+
+    await cli("view", "set", "--grid", "hide");
+    await expect(page.locator(".pixel-grid")).toHaveCount(0);
+    await cli("view", "set", "--grid", "show");
+    await expect(page.getByLabel("2 to 1 isometric guide")).toBeVisible();
+    await cli("view", "set", "--grid-mode", "square");
+    await expect(page.locator(".pixel-grid-square")).toBeVisible();
+    await expect(page.locator(".pixel-grid-isometric")).toHaveCount(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("browser selection synchronizes with the session and survives reconnect", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
@@ -156,7 +206,8 @@ test("semantic MCP web commands read and operate the connected browser without p
   expect(controlled.ok()).toBeTruthy();
   await expect(page.getByRole("tab", { name: "Edit" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("button", { name: "Select", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: "Toggle grid" })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "Square grid", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "2:1 isometric grid", exact: true })).toHaveAttribute("aria-pressed", "false");
 
   const importedDocument = createPixelDocument({
     id: "ai-imported-document",

@@ -124,7 +124,18 @@ Editable Pixel's editor, conversion, and rendering run locally. Context supplied
 3. **Edit** pixels and Layers; organize Frames into Clips; tune frame duration, playback, and Onion Skin. Use Color/Normal editing and Smooth or Toon Palette lighting as needed.
 4. **Export** Color PNG, Normal PNG, baked Lit PNG, GIF, Sprite Sheet, editable Pixel JSON, or the complete Project. Integer export scales preserve crisp pixels.
 
-**Experimental:** 2:1 isometric guides and AI-selectable diamond tiles are being developed separately from the core workflow.
+## Isometric guides
+
+Switch the canvas toolbar to **2:1 isometric grid** for a 2:1 guide. Select diamond-shaped tiles through the CLI or Codex/Claude MCP, then reuse the normal pixel, palette, lighting, and export tools.
+
+```bash
+editable-pixel view set --session <session-id> --grid-mode isometric
+editable-pixel selection diamond --session <session-id> --center-x 32 --center-y 32 --width 32
+```
+
+The default tile height is half its width. Selections appear in the existing Selection tool and share Undo/Redo. The view command needs that session open in a connected browser. From a source checkout, replace `editable-pixel` with `node packages/pixel-cli/dist/cli.js`.
+
+This is a guide over square raster pixels, not a voxel model, automatic perspective conversion, or tile-map format. See the [CLI reference](./docs/cli.md#isometric-grid-and-selection) for visibility, target, and selection-combination options.
 
 ## What gets saved?
 

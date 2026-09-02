@@ -80,7 +80,7 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
 
       if (request.method === "GET" && url.pathname === "/api/health") {
         requireDaemon(request, daemonToken);
-        return json(response, 200, { ok: true, pid: process.pid, port });
+        return json(response, 200, { ok: true, pid: process.pid, port, features: ["isometric-selection"] });
       }
       if (request.method === "GET" && url.pathname === "/api/sessions") {
         requireDaemon(request, daemonToken);

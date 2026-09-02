@@ -91,6 +91,16 @@ export type EditablePixelAction =
 
 export type SelectionCommand =
   | {
+    type: "isometric_diamond";
+    centerX: number;
+    centerY: number;
+    width: number;
+    height?: number;
+    layerId?: string;
+    frameId?: string;
+    mode?: "replace" | "add" | "remove" | "toggle";
+  }
+  | {
     type: "rect";
     x: number;
     y: number;
@@ -336,6 +346,8 @@ export function createSelection(
         indices.push(y * document.canvas.width + x);
       }
     }
+  } else if (command.type === "isometric_diamond") {
+    indices = isometricDiamondIndices(document, command);
   } else if (command.type === "pixels") {
     indices = command.pixels.map(({ x, y }) => pixelIndex(document, x, y));
   } else if (command.type === "color") {
@@ -365,7 +377,51 @@ export function createSelection(
     layerId,
     frameId
   );
+  if (command.type === "isometric_diamond" && merged.length > 100_000) {
+    throw new RangeError("The isometric selection exceeds the 100,000 pixel Selection limit.");
+  }
   return selectionFromIndices(merged, document.canvas.width, layerId, frameId);
+}
+
+function isometricDiamondIndices(
+  document: PixelDocument,
+  command: Extract<SelectionCommand, { type: "isometric_diamond" }>
+): number[] {
+  const height = command.height ?? Math.max(1, Math.round(command.width / 2));
+  for (const [name, value, minimum, maximum] of [
+    ["centerX", command.centerX, 0, 4095],
+    ["centerY", command.centerY, 0, 4095],
+    ["width", command.width, 2, 4096],
+    ["height", height, 1, 4096]
+  ] as const) {
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw new RangeError(`Diamond ${name} must be an integer from ${minimum} to ${maximum}.`);
+    }
+  }
+  if (command.mode !== undefined && !["replace", "add", "remove", "toggle"].includes(command.mode)) {
+    throw new RangeError("Diamond selection mode must be replace, add, remove, or toggle.");
+  }
+  const halfWidth = command.width / 2;
+  const halfHeight = height / 2;
+  const minimumX = Math.max(0, Math.floor(command.centerX - halfWidth));
+  const maximumX = Math.min(document.canvas.width - 1, Math.ceil(command.centerX + halfWidth) - 1);
+  const minimumY = Math.max(0, Math.floor(command.centerY - halfHeight));
+  const maximumY = Math.min(document.canvas.height - 1, Math.ceil(command.centerY + halfHeight) - 1);
+  const indices: number[] = [];
+  for (let y = minimumY; y <= maximumY; y += 1) {
+    for (let x = minimumX; x <= maximumX; x += 1) {
+      const distance = Math.abs((x + 0.5 - command.centerX) / halfWidth)
+        + Math.abs((y + 0.5 - command.centerY) / halfHeight);
+      if (distance <= 1) {
+        indices.push(y * document.canvas.width + x);
+        if (indices.length > 100_000) {
+          throw new RangeError("The isometric diamond exceeds the 100,000 pixel Selection limit.");
+        }
+      }
+    }
+  }
+  if (indices.length === 0) throw new RangeError("The isometric diamond does not intersect the canvas.");
+  return indices;
 }
 
 function targetIds(

@@ -46,7 +46,7 @@ Do not require a preview approval. Preview and Screenshot are optional QA tools.
 - AI and the user share `document.selection`, session History, Undo, Redo, revision, and autosave.
 - Project/Clip actions and AI-driven imports are synchronized back into the visible browser Project model; do not edit Project JSON behind the session.
 - Treat one user intent as one `use_editable_pixel` transaction when the action schema supports it.
-- Use `set_selection` for rectangle, pixel mask, color, connected component, outline, or content bounds selection.
+- Use `set_selection` for rectangle, pixel mask, 2:1 isometric diamond, color, connected component, outline, or content bounds selection.
 - Keep exact pixel edits selection-bounded unless the user clearly requested a document-wide palette or structure action.
 - Use the supplied reason as a concise History label.
 - On conflict, refresh metadata/context and recreate the action against the current state.

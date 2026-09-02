@@ -24,6 +24,7 @@ import {
 export type Tool = "pen" | "eraser" | "fill" | "select";
 export type EditMapMode = "color" | "normal";
 export type NormalPreviewMode = "map" | "lit";
+export type GridMode = "square" | "isometric";
 
 export interface OnionSkinSettings {
   previous: number;
@@ -45,6 +46,7 @@ interface PixelCanvasProps {
   showLightMarker: boolean;
   zoom: number;
   showGrid: boolean;
+  gridMode: GridMode;
   onionSkin: OnionSkinSettings;
   canvasBackground: string;
   referenceImageUrl?: string;
@@ -68,6 +70,23 @@ type RectSelection = Extract<Selection, { type: "rect" }>;
 
 const previousFrameTint: [number, number, number] = [255, 92, 53];
 const nextFrameTint: [number, number, number] = [42, 211, 235];
+const isometricTileHeight = 8;
+
+export function isometricGridPath(width: number, height: number, major: boolean): string {
+  const commands: string[] = [];
+  for (const slope of [0.5, -0.5]) {
+    const minimumIntercept = slope > 0 ? -slope * width : 0;
+    const maximumIntercept = slope > 0 ? height : height - slope * width;
+    const first = Math.floor(minimumIntercept / isometricTileHeight);
+    const last = Math.ceil(maximumIntercept / isometricTileHeight);
+    for (let index = first; index <= last; index += 1) {
+      if ((index % 4 === 0) !== major) continue;
+      const intercept = index * isometricTileHeight;
+      commands.push(`M 0 ${intercept} L ${width} ${slope * width + intercept}`);
+    }
+  }
+  return commands.join(" ");
+}
 
 export function renderOnionSkinRgba(
   document: PixelDocument,
@@ -143,6 +162,7 @@ export function PixelCanvas({
   showLightMarker,
   zoom,
   showGrid,
+  gridMode,
   onionSkin,
   canvasBackground,
   referenceImageUrl,
@@ -578,7 +598,18 @@ export function PixelCanvas({
           onPointerCancel={onPointerCancel}
         >
           <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} aria-label="Pixel canvas" />
-          {showGrid && <div className="pixel-grid" style={{ backgroundSize: `${zoom}px ${zoom}px` }} />}
+          {showGrid && gridMode === "square" && <div className="pixel-grid pixel-grid-square" style={{ backgroundSize: `${zoom}px ${zoom}px` }} />}
+          {showGrid && gridMode === "isometric" && (
+            <svg
+              className="pixel-grid pixel-grid-isometric"
+              viewBox={`0 0 ${document.canvas.width} ${document.canvas.height}`}
+              preserveAspectRatio="none"
+              aria-label="2 to 1 isometric guide"
+            >
+              <path className="isometric-grid-minor" d={isometricGridPath(document.canvas.width, document.canvas.height, false)} />
+              <path className="isometric-grid-major" d={isometricGridPath(document.canvas.width, document.canvas.height, true)} />
+            </svg>
+          )}
           {compareMode && referenceImageUrl && (
             <div
               className="reference-overlay"
