@@ -1,168 +1,66 @@
 # Editable Pixel
 
-[한국어](./README.ko.md)
+[한국어](./README.ko.md) · [Examples](#before-and-after) · [Run locally](#run-locally) · [Connect your agent](#connect-codex-or-claude)
 
-**Turn AI-generated pixel-style images into deterministic, editable pixel assets — locally.**
+**Keep the sprite. Change exactly what you mean.**
 
-Editable Pixel is a local-first pixel workbench for images, short animations, Normal Maps, and selection-bounded Codex or Claude edits. The CLI starts a loopback server and opens the editor in your browser; your source images, Projects, and editing sessions stay on your machine.
+A local pixel-art workbench for people creating assets with AI. Import a generated image or sprite sheet, convert it to an editable pixel grid, and refine it in the browser—or ask **Codex or Claude** to edit the same canvas through MCP.
 
-![Editable Pixel local editor](./docs/media/editor-overview.png)
+Change a character's color scheme without redrawing it. Align animation frames. Edit exact pixels, paint normal maps, and export the result.
 
-![64×64 robot motion preview](./docs/media/robot-motion-64.gif)
+## Before and after
 
-## Install
+These are actual Editable Pixel exports from an eight-frame, **128×128** robot demo, displayed at matching integer scales. The sprite is edited, not regenerated.
 
-### Install script (macOS and Linux)
+### Recolor the character, including its shading
 
-Review [install.sh](./install.sh), then run:
+> “Turn the orange robot blue across all eight frames. Keep the shading and cyan accents.”
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
-```
+![Orange robot before and blue robot after: highlights, midtones, and shadows are remapped together](./docs/media/before-after-palette.png)
 
-### npm
+The demo maps **35 warm palette shades** to corresponding blues—not one flat replacement color. Cyan accent colors, dark visor pixels, the silhouette, and animation poses stay intact.
 
-```bash
-npm install --global editable-pixel
-```
+### Align the animation's ground contact
 
-Node.js 20.9 or newer is required. No hosted Editable Pixel service is involved.
+> “Move the last frame down to match the first frame's ground position.”
 
-## Start the local editor
+![Frame 1 reference at Y121, Frame 8 before at Y108, and Frame 8 after moving down 13 pixels to Y121](./docs/media/before-after-ground.png)
 
-Open a blank source-less Project:
+A deliberately offset demo frame is moved **13 pixels**. Its pose is preserved; only its position changes. Ground alignment is one part of loop cleanup, not a claim that different poses become identical.
 
-```bash
-editable-pixel open
-```
+### Add lighting without repainting the color layer
 
-Or open an existing Project or Pixel Document:
+> “Use the normal maps with one consistent six-step light, then export Lit PNGs.”
 
-```bash
-editable-pixel open character.pixel-project.json
-editable-pixel open character.pixel.json
-```
+![Color sprite, painted normal map, and the baked lighting result](./docs/media/before-after-lighting.png)
 
-The command starts a server bound to `127.0.0.1` and opens a one-time local browser session. You can immediately Import a PNG, WebP, JPEG, Pixel JSON, Pixel Project, frame sequence, or Sprite Sheet from the header.
+This example uses **prepared per-frame normal maps**, Toon Palette lighting with six steps, 38% light strength, and 58% ambient light. Color, Normal, and Lit are separate exports; importing an image alone does not automatically create its normal map.
 
-You can also try the latest published package without installing it globally:
+[Demo details and verification](./docs/media/README.md)
 
-```bash
-npx editable-pixel open
-```
+## One editor, shared with your agent
 
-## Connect Codex and Claude
+![Editable Pixel browser editor after an AI palette edit](./docs/media/editor-palette-ai.png)
 
-The npm package includes the Editable Pixel Skill and MCP executable. Register both after installation:
+- **Visible selections.** AI-selected regions use the same Selection tool as your mouse.
+- **Shared History.** AI and manual edits share Undo, Redo, revision checks, and autosave.
+- **Pixel-level control.** Target coordinates, rectangles, masks, connected regions, palette colors, Layers, Frames, or Clips.
+- **Direct MCP editing.** Inspect focused context and apply structured edits without simulating mouse clicks for every pixel.
 
-```bash
-editable-pixel install-skill --host both
-```
-
-Or install one host at a time:
-
-```bash
-editable-pixel install-skill --host codex
-editable-pixel install-skill --host claude
-```
-
-`install-skill` copies the bundled Skill and registers the absolute local MCP entrypoint. Codex and Claude can then inspect the active Project, show their target through the same Selection tool, and apply pixel, palette, Layer, Frame, Clip, Normal Map, and lighting edits directly to the browser's History. User and AI actions share Undo, Redo, revision checks, and autosave.
-
-See [MCP and host setup](./docs/mcp.md) for the complete protocol.
-
-## Typical workflow
+Example requests:
 
 ```text
-AI image or Sprite Gen output
-          ↓
-Import into one local Project
-          ↓
-Convert to a logical pixel grid
-          ↓
-Edit pixels, Frames, Clips, Normal Maps, and lighting
-          ↓
-Refine exact regions with Codex or Claude
-          ↓
-Export PNG, Lit PNG, GIF, Sprite Sheet, or editable JSON
+Move the selected pixels 2 px to the right.
+Remove stray white pixels outside the outline; leave the interior alone.
+Replace the robot's orange palette ramp with blue across this animation.
+Set Frame 1 to 160 ms and Frame 4 to 100 ms.
 ```
 
-Editable Pixel completes and corrects generated assets; it does not bundle an AI Sprite Sheet generator. A generator such as `sprite-gen` can create source frames, while Editable Pixel owns deterministic conversion, exact pixel cleanup, loop refinement, Normal Maps, lighting, and export.
+## Run locally
 
-## What you can edit
+**Pre-release:** the npm package has not been published yet. Use the source build below. The npm and install-script workflows are prepared, but are not live installation options yet.
 
-- Draw, erase, fill, select, cut, copy, paste, and replace palette colors.
-- Keep one editable canvas per Project, with optional retained Sources for comparison and reconversion.
-- Manage Layers, Frames, named Clips, per-frame duration, playback, and Onion Skin.
-- Align imported frame sequences on a shared logical canvas and refine animation loop seams.
-- Edit Color and Normal maps per Layer and Frame.
-- Preview Smooth or Toon Palette lighting and export baked Lit PNGs.
-- Queue edits during a temporary local reconnect and flush them in order afterward.
-- Export Color PNG, Normal PNG, Lit PNG, GIF, Sprite Sheet, Pixel JSON, or the complete Project.
-
-## Project model
-
-```text
-Pixel Project (.pixel-project.json)
-├── Sources (optional retained inputs)
-├── Pixel Document (.pixel.json exchange boundary)
-│   ├── Canvas + Palette
-│   ├── Layers × Frames: Color + Normal pixels
-│   └── Frames: duration + lighting
-└── Clips: ordered Frame IDs
-```
-
-The Project is the autosaved local work unit. `.pixel.json` exchanges its editable canvas. PNG, GIF, and Sprite Sheets are derived outputs. Save As creates an independent Project, not a V2 or Variant.
-
-## Useful CLI commands
-
-Convert an AI image to a 64×64 Pixel Document:
-
-```bash
-editable-pixel convert robot.png --size 64 --colors 18 --output robot.pixel.json
-```
-
-Create a Project and open it:
-
-```bash
-editable-pixel project create "Robot Pack" --size 64 --output robot.pixel-project.json
-editable-pixel open robot.pixel-project.json
-```
-
-Validate, render, and export:
-
-```bash
-editable-pixel validate robot.pixel-project.json
-editable-pixel render robot.pixel-project.json --format lit --scale 4 --output robot-lit.png
-editable-pixel export robot.pixel-project.json --output robot-export
-```
-
-See the [CLI reference](./docs/cli.md) for every command and stable JSON output.
-
-## Update or remove
-
-Running the installer again updates to the latest npm release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
-```
-
-Install a specific version or uninstall:
-
-```bash
-sh install.sh --version 1.0.0
-sh install.sh --uninstall
-```
-
-The equivalent npm commands are:
-
-```bash
-npm update --global editable-pixel
-npm uninstall --global editable-pixel
-```
-
-Removing the npm package does not delete exported files or browser-local Projects.
-
-## Build from source
+Requires **Node.js 20.9+** and **pnpm 10.29.3**. This starts a local editor, not a hosted web service.
 
 ```bash
 git clone https://github.com/NariP/editable-pixel.git
@@ -173,25 +71,89 @@ pnpm build
 node packages/pixel-cli/dist/cli.js open
 ```
 
-## Documentation
-
-- [Getting started](./docs/getting-started.md)
-- [Project model](./docs/project-model.md)
-- [Pixel Document v1](./docs/pixel-document.md)
-- [CLI reference](./docs/cli.md)
-- [MCP and host integration](./docs/mcp.md)
-- [Security model](./docs/security.md)
-- [Release process](./docs/releases.md)
-- [Validation record](./docs/validation.md)
-- [Contributing](./CONTRIBUTING.md)
-
-## Development
+The editor runs on `127.0.0.1`. Start with a blank Project, or open an existing file:
 
 ```bash
-pnpm verify
-pnpm test:e2e
-pnpm test:distribution
-pnpm test:source-install
+node packages/pixel-cli/dist/cli.js open character.pixel-project.json
+node packages/pixel-cli/dist/cli.js open character.pixel.json
+```
+
+<details>
+<summary>After the npm release: install, update, or remove</summary>
+
+```bash
+npm install --global editable-pixel
+editable-pixel open
+```
+
+Alternatively, on macOS or Linux, review [install.sh](./install.sh) and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
+```
+
+The script installs the npm package, so it also requires a published release. Running it again updates the installation; `sh install.sh --version X.Y.Z` selects a release.
+
+```bash
+npm update --global editable-pixel
+npm uninstall --global editable-pixel
+```
+
+Uninstalling the package does not delete exported files or browser-local Projects.
+
+</details>
+
+## Connect Codex or Claude
+
+From the built repository:
+
+```bash
+node packages/pixel-cli/dist/cli.js install-skill --host both
+```
+
+Use `--host codex` or `--host claude` to register only one host. This installs the bundled **Skill** and registers the local **MCP server**. Restart the host or reload its MCP connections, then ask it to open and edit your Project. Keep the repository at its installed path: the registration points to the built executable there.
+
+The Skill guides the agent to read metadata first, inspect only the relevant region, and apply edits to the same Project you see. See [host setup and MCP tools](./docs/mcp.md).
+
+Editable Pixel's editor, conversion, and rendering run locally. Context supplied to Codex or Claude is handled under that host's own model and privacy settings; a local editor does not make a cloud AI host offline.
+
+## Import → edit → export
+
+1. **Import** PNG, WebP, JPEG, Pixel JSON, a Project, a frame sequence, or a sprite sheet. Choose whether to replace the canvas, add Frames, or retain a Source.
+2. **Convert** retained images to a logical pixel grid with canvas size, palette, background, alignment, and dithering controls.
+3. **Edit** pixels and Layers; organize Frames into Clips; tune frame duration, playback, and Onion Skin. Use Color/Normal editing and Smooth or Toon Palette lighting as needed.
+4. **Export** Color PNG, Normal PNG, baked Lit PNG, GIF, Sprite Sheet, editable Pixel JSON, or the complete Project. Integer export scales preserve crisp pixels.
+
+**Experimental:** 2:1 isometric guides and AI-selectable diamond tiles are being developed separately from the core workflow.
+
+## What gets saved?
+
+| Format | Purpose |
+| --- | --- |
+| `.pixel-project.json` | Complete Project: one editable canvas, Layers, Frames, Clips, and optional retained Sources. |
+| `.pixel.json` | Editable Pixel Document with palette, pixels, frame timing, normal maps, and lighting. |
+| PNG / GIF / Sprite Sheet | Derived outputs for games, previews, and other tools. |
+
+Edits autosave in the local workspace. **Save As** creates an independent Project, not another V1/V2 variant. Export a Project file when you need a portable backup.
+
+A retained image Source is optional for drawing and editing. Keep one if you need source-based reconversion or Content Frame normalization; a Pixel JSON alone is not the original image. See the [Project model](./docs/project-model.md).
+
+Editable Pixel does **not** include an image-generation model or sprite-sheet generator. Bring output from your preferred generator; use this tool for conversion, precise corrections, animation cleanup, and export.
+
+## Documentation and development
+
+- [Getting started](./docs/getting-started.md)
+- [CLI reference](./docs/cli.md) · [MCP and host integration](./docs/mcp.md)
+- [Project model](./docs/project-model.md) · [Pixel Document format](./docs/pixel-document.md)
+- [Security model](./docs/security.md) · [Report a vulnerability](./SECURITY.md)
+- [Contributing](./CONTRIBUTING.md) · [Release process](./docs/releases.md) · [Validation record](./docs/validation.md)
+
+```bash
+pnpm dev                  # Web development server
+pnpm verify               # Build, lint, typecheck, unit/integration tests
+pnpm test:e2e             # Browser workflows
+pnpm test:distribution    # Packaged installation checks
+pnpm test:source-install  # Clean source-checkout installation
 ```
 
 ## License
