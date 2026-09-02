@@ -10,7 +10,7 @@ Change a character's color scheme without redrawing it. Align animation frames. 
 
 ## Before and after
 
-These are actual Editable Pixel exports from an eight-frame, **128×128** robot demo, displayed at matching integer scales. The sprite is edited, not regenerated.
+The palette and alignment comparisons use an eight-frame, **128×128** robot demo, displayed at matching integer scales. The lighting showcase uses a separately selected Lit PNG export. The sprites are not regenerated.
 
 ### Recolor the character, including its shading
 
@@ -30,11 +30,11 @@ A deliberately offset demo frame is moved **13 pixels**. Its pose is preserved; 
 
 ### Add lighting without repainting the color layer
 
-> “Use the normal maps with one consistent six-step light, then export Lit PNGs.”
+> “Use a prepared normal map with Smooth lighting, then export a Lit PNG.”
 
-![Color sprite, painted normal map, and the baked lighting result](./docs/media/before-after-lighting.png)
+![Actual 128×128 robot Lit PNG export shown at 4×](./docs/media/before-after-lighting.png)
 
-This example uses **prepared per-frame normal maps**, Toon Palette lighting with six steps, 38% light strength, and 58% ambient light. Color, Normal, and Lit are separate exports; importing an image alone does not automatically create its normal map.
+The showcase displays the selected [Lit PNG](./docs/media/evaluation-fixture-lit.png) unchanged. Use **Smooth lighting** with a prepared normal map for continuous shading rather than Toon Palette steps. Color, Normal, and Lit are separate exports; importing an image alone does not automatically create its normal map. This is an output showcase; the original map and light settings are not included in the supplied PNG.
 
 [Demo details and verification](./docs/media/README.md)
 
