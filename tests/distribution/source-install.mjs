@@ -10,6 +10,7 @@ const sourceRoot = resolve(".");
 const temporary = await mkdtemp(join(tmpdir(), "editable-pixel-source-install-"));
 const checkout = join(temporary, "repo");
 let server;
+let serverPort;
 
 try {
   const { stdout } = await execFile("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
@@ -26,9 +27,11 @@ try {
   await run("pnpm", ["build"]);
 
   const port = await availablePort();
+  serverPort = port;
   server = spawn("pnpm", ["--filter", "@editable-pixel/web", "dev", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: checkout,
     env: process.env,
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"]
   });
   let logs = "";
@@ -38,7 +41,7 @@ try {
   const deadline = Date.now() + 15_000;
   let ready = false;
   while (Date.now() < deadline) {
-    if (server.exitCode !== null) throw new Error(`Development server exited early.\n${logs}`);
+    if (server.exitCode !== null || server.signalCode !== null) throw new Error(`Development server exited early.\n${logs}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
       if (response.ok) {
@@ -51,29 +54,45 @@ try {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
   if (!ready) throw new Error(`Development server did not become ready.\n${logs}`);
-  process.stdout.write("Isolated source install, build, and development server check passed.\n");
 } finally {
-  if (server?.exitCode === null) {
-    const exited = new Promise((resolvePromise) => server.once("exit", resolvePromise));
-    server.kill("SIGTERM");
-    await Promise.race([exited, new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000))]);
-    if (server.exitCode === null) {
-      server.kill("SIGKILL");
-      await exited;
+  if (server?.pid) {
+    // pnpm's exit can precede Vite/esbuild shutdown. Wait for their inherited pipes too.
+    const closed = server.stdout.destroyed && server.stderr.destroyed
+      ? Promise.resolve(true)
+      : new Promise((resolvePromise) => server.once("close", () => resolvePromise(true)));
+    if (process.platform === "win32") {
+      if (server.exitCode === null && server.signalCode === null) {
+        await execFile("taskkill", ["/pid", String(server.pid), "/T", "/F"]);
+      }
+    } else {
+      const signalGroup = (signal) => {
+        try { process.kill(-server.pid, signal); } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      };
+      signalGroup("SIGTERM");
+      const stopped = await Promise.race([
+        closed,
+        new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 2_000).unref())
+      ]);
+      if (!stopped) signalGroup("SIGKILL");
     }
+    await closed;
+    if (serverPort !== undefined) await availablePort(serverPort);
   }
-  await rm(temporary, { recursive: true, force: true });
+  await rm(temporary, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
+process.stdout.write("Isolated source install, build, development server, and cleanup checks passed.\n");
 
 async function run(command, args) {
   await execFile(command, args, { cwd: checkout, env: process.env, maxBuffer: 20 * 1024 * 1024 });
 }
 
-async function availablePort() {
+async function availablePort(port = 0) {
   const listener = createServer();
   await new Promise((resolvePromise, reject) => {
     listener.once("error", reject);
-    listener.listen(0, "127.0.0.1", resolvePromise);
+    listener.listen(port, "127.0.0.1", resolvePromise);
   });
   const address = listener.address();
   if (!address || typeof address === "string") throw new Error("Could not allocate a loopback port.");
