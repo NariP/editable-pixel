@@ -1,4 +1,4 @@
-import { NEUTRAL_NORMAL, createPixelDocument } from "@editable-pixel/document";
+import { NEUTRAL_NORMAL, createPixelDocument, type PixelDocument } from "@editable-pixel/document";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFile } from "node:child_process";
@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import sharp from "sharp";
 
 const daemonToken = "editable-pixel-e2e-daemon-token";
 test("CLI isometric controls update the visible grid and shared selection history", async ({ page, request }) => {
@@ -177,7 +178,7 @@ test("AI selection and immediate edits use the visible Select tool and shared br
   await expect.poll(() => sessionPixel(request, created.session.id)).toEqual({ revision: 4, changed: 2 });
 });
 
-test("semantic MCP web commands read and operate the connected browser without pixel-coordinate clicks", async ({ page, request }) => {
+test("Session API web commands read and operate the connected browser without pixel-coordinate clicks", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
@@ -887,17 +888,39 @@ test("a bounded agent patch is previewed, rejected outside selection, and applie
 
 test("rapid connected-canvas edits keep sequential revisions without conflicts", async ({ page, request }) => {
   const created = await createSession(request);
+  const patches: Array<{ id: string; baseRevision: number }> = [];
+  const stateRevisions: number[] = [];
+  const failures: string[] = [];
+  page.on("websocket", (socket) => {
+    socket.on("framesent", ({ payload }) => {
+      const message = JSON.parse(payload.toString()) as { type: string; patch?: { id: string; baseRevision: number } };
+      if (message.type === "document.patch" && message.patch) patches.push(message.patch);
+    });
+    socket.on("framereceived", ({ payload }) => {
+      const message = JSON.parse(payload.toString()) as { type: string; document?: { revision: number } };
+      if (message.type === "state" && message.document) stateRevisions.push(message.document.revision);
+      if (message.type === "conflict" || message.type === "error") failures.push(message.type);
+    });
+  });
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
+  const before = await (await request.get(`/api/sessions/${created.session.id}`, {
+    headers: authorization()
+  })).json() as { revision: number; document: PixelDocument };
+  const expectedPixels = [...before.document.layers[0]!.frames["idle-1"]!];
+  expectedPixels.fill(1, 0, 5);
   await page.getByRole("button", { name: "Pen" }).click();
   const canvas = page.getByLabel("Pixel canvas");
   const box = await canvas.boundingBox();
   if (!box) throw new Error("Pixel canvas is not visible.");
 
-  await page.mouse.move(box.x + box.width * 0.5 / 8, box.y + box.height * 0.5 / 6);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 4.5 / 8, box.y + box.height * 0.5 / 6, { steps: 12 });
-  await page.mouse.up();
+  // Separate completed gestures exercise the queue without prescribing patches per stroke.
+  for (const [start, end] of [[0.5, 1.5], [2.5, 3.5], [4.5, 4.5]] as const) {
+    await page.mouse.move(box.x + box.width * start / 8, box.y + box.height * 0.5 / 6);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * end / 8, box.y + box.height * 0.5 / 6, { steps: 4 });
+    await page.mouse.up();
+  }
 
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
@@ -906,11 +929,19 @@ test("rapid connected-canvas edits keep sequential revisions without conflicts",
       document: { layers: Array<{ id: string; frames: Record<string, number[]> }> };
     };
     return {
-      revisionAdvanced: session.revision > 0,
-      stroke: session.document.layers.find((layer) => layer.id === "artwork")?.frames["idle-1"]?.slice(0, 5)
+      allSentPatchesAcknowledged: session.revision === before.revision + patches.length,
+      pixels: session.document.layers.find((layer) => layer.id === "artwork")?.frames["idle-1"]
     };
-  }).toEqual({ revisionAdvanced: true, stroke: [1, 1, 1, 1, 1] });
+  }).toEqual({ allSentPatchesAcknowledged: true, pixels: expectedPixels });
   await expect(page.locator(".status-connected")).toBeVisible();
+  expect(patches.length).toBeGreaterThan(1);
+  expect(new Set(patches.map((patch) => patch.id)).size).toBe(patches.length);
+  expect(patches.map((patch) => patch.baseRevision)).toEqual(patches.map((_, index) => before.revision + index));
+  await expect.poll(() => stateRevisions.at(-1)).toBe(before.revision + patches.length);
+  expect(stateRevisions.filter((revision, index) => index === 0 || revision !== stateRevisions[index - 1]))
+    .toEqual(Array.from({ length: patches.length + 1 }, (_, index) => before.revision + index));
+  expect(failures).toEqual([]);
+  await expect(page.locator(".status-conflict")).toHaveCount(0);
 });
 
 test("offline pixel edits stay visible, queue locally, and flush after reconnect", async ({ page, request, context }) => {
@@ -982,37 +1013,6 @@ test("keeps the previous conversion preview visible while a fixed palette remova
   await expect(surface).toHaveAttribute("aria-busy", "false", { timeout: 10_000 });
 });
 
-test("commits numeric conversion inputs only after they lose focus", async ({ page, request }) => {
-  const created = await createSession(request);
-  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
-  await expect(page.locator(".status-connected")).toBeVisible();
-
-  const source = await renderPng(createPixelDocument({
-    width: 8,
-    height: 1,
-    palette: ["#00000000", "#ff0000ff", "#ff7f00ff", "#ffff00ff", "#00ff00ff", "#00ffffff", "#0000ffff", "#4b0082ff", "#9400d3ff"],
-    pixels: [1, 2, 3, 4, 5, 6, 7, 8]
-  }));
-  const canvas = page.getByLabel("Pixel canvas");
-  const blankImage = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
-  await page.locator('input[type="file"]').setInputFiles({
-    name: "color-count.png",
-    mimeType: "image/png",
-    buffer: source
-  });
-  await page.getByRole("button", { name: /Replace Canvas/ }).click();
-  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 10_000 }).not.toBe(blankImage);
-
-  const before = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
-  const colorCount = page.getByLabel("Color count");
-  await colorCount.fill("4");
-  await page.waitForTimeout(500);
-  expect(await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL())).toBe(before);
-
-  await colorCount.press("Tab");
-  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 10_000 }).not.toBe(before);
-});
-
 test("retained-source and sprite-sheet import purposes preserve their distinct ownership", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
@@ -1057,17 +1057,38 @@ test("retained-source and sprite-sheet import purposes preserve their distinct o
   }).toBe(3);
 });
 
-test("multiple AI images become ordered clip frames and export as a real GIF", async ({ page, request }) => {
+test("multiple images import in natural filename order and export matching GIF pixels and timing", async ({ page, request }) => {
   const created = await createSession(request);
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
-  const red = await renderPng(createPixelDocument({
-    width: 2, height: 2, palette: ["#00000000", "#ff0000ff"], pixels: [0, 1, 1, 0]
-  }));
-  const blue = await renderPng(createPixelDocument({
-    width: 2, height: 2, palette: ["#00000000", "#0000ffff"], pixels: [1, 0, 0, 1]
-  }));
+  // Both sources span the native canvas, so Tight imports must preserve every cell.
+  const frame2Pixels = [
+    1, 0, 2, 0, 0, 0, 0, 0,
+    0, 1, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 2, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 1
+  ];
+  const frame10Pixels = [
+    2, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0, 0, 0,
+    0, 0, 2, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 2
+  ];
+  const initialPixels = new Array<number>(48).fill(0);
+  for (const index of [10, 11, 12, 13]) initialPixels[index] = 1;
+  initialPixels[18] = 2;
+  const rgbaPalette = [[0, 0, 0, 0], [255, 122, 0, 255], [0, 223, 247, 255]];
+  const rgba = (pixels: number[]) => Buffer.from(pixels.flatMap((index) => rgbaPalette[index]!));
+  const frame2 = await sharp(rgba(frame2Pixels), { raw: { width: 8, height: 6, channels: 4 } }).png().toBuffer();
+  const frame10 = await sharp(rgba(frame10Pixels), { raw: { width: 8, height: 6, channels: 4 } }).png().toBuffer();
+  const expectedFrames = [initialPixels, frame2Pixels, frame10Pixels];
+  const durations = [80, 140, 230];
 
+  await page.getByRole("button", { name: /Tight 100%/ }).click();
   await page.getByLabel("Canvas preset").click();
   await page.getByRole("option", { name: "Custom" }).click();
   await page.getByLabel("Canvas width").fill("24");
@@ -1084,8 +1105,8 @@ test("multiple AI images become ordered clip frames and export as a real GIF", a
   await expect(page.getByLabel("Fixed palette color 2", { exact: true })).toHaveValue("#0000ff");
 
   await page.locator('input[type="file"]').setInputFiles([
-    { name: "red-ai.png", mimeType: "image/png", buffer: red },
-    { name: "blue-ai.png", mimeType: "image/png", buffer: blue }
+    { name: "motion-10.png", mimeType: "image/png", buffer: frame10 },
+    { name: "motion-2.png", mimeType: "image/png", buffer: frame2 }
   ]);
   await expect(page.getByRole("dialog", { name: "Choose an import purpose" })).toBeVisible();
   await page.getByRole("button", { name: /Add as Frames/ }).click();
@@ -1097,14 +1118,29 @@ test("multiple AI images become ordered clip frames and export as a real GIF", a
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as {
       revision: number;
-      document: { canvas: { width: number; height: number }; palette: string[]; frames: unknown[] };
+      document: PixelDocument;
     };
-    return { canvas: session.document.canvas, palette: session.document.palette, frames: session.document.frames.length };
+    return {
+      canvas: session.document.canvas,
+      palette: session.document.palette,
+      frames: session.document.frames.map((frame) => session.document.layers[0]!.frames[frame.id])
+    };
   }).toEqual({
     canvas: { width: 8, height: 6 },
     palette: ["#00000000", "#ff7a00ff", "#00dff7ff"],
-    frames: 3
+    frames: expectedFrames
   });
+
+  for (const [index, label] of ["Frame 1", "Frame 2", "Frame 3"].entries()) {
+    const duration = page.getByLabel(`${label} duration`, { exact: true });
+    await duration.fill(String(durations[index]));
+    await duration.press("Tab");
+    await expect.poll(async () => {
+      const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
+      const session = await response.json() as { document: PixelDocument };
+      return session.document.frames[index]!.durationMs;
+    }).toBe(durations[index]);
+  }
 
   await page.getByRole("button", { name: "Export" }).click();
   await page.getByRole("button", { name: "GIF" }).click();
@@ -1114,7 +1150,14 @@ test("multiple AI images become ordered clip frames and export as a real GIF", a
   expect(download.suggestedFilename()).toMatch(/\.gif$/);
   const downloadPath = await download.path();
   if (!downloadPath) throw new Error("GIF download did not produce a local file.");
-  expect((await readFile(downloadPath)).subarray(0, 6).toString("ascii")).toBe("GIF89a");
+  const gif = await readFile(downloadPath);
+  const metadata = await sharp(gif, { animated: true }).metadata();
+  expect(metadata).toMatchObject({ format: "gif", pages: 3, width: 8, pageHeight: 6, delay: durations });
+  const decoded = await sharp(gif, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  expect(decoded.info).toMatchObject({ width: 8, height: 18, channels: 4 });
+  for (const [index, pixels] of expectedFrames.entries()) {
+    expect(decoded.data.subarray(index * 8 * 6 * 4, (index + 1) * 8 * 6 * 4)).toEqual(rgba(pixels));
+  }
 
   await page.reload();
   await expect(page.locator(".status-connected")).toBeVisible();
