@@ -75,7 +75,7 @@ npm install --global editable-pixel
 editable-pixel open
 ```
 
-**Windows:** 다음 npm 릴리스까지는 아래 소스 빌드를 사용하세요. Windows 실행기 수정은 `1.0.1`에 포함되지 않았습니다. `install.sh` 대신 PowerShell이나 명령 프롬프트를 사용합니다. PowerShell이 npm의 `.ps1` 실행을 차단하면 실행 정책을 변경하지 말고 `npm.cmd` / `editable-pixel.cmd`로 실행하세요.
+**Windows:** `1.0.2`부터 npm 설치를 지원합니다. `install.sh` 대신 PowerShell이나 명령 프롬프트를 사용합니다. PowerShell이 npm의 `.ps1` 실행을 차단하면 실행 정책을 변경하지 말고 `npm.cmd` / `editable-pixel.cmd`로 실행하세요.
 
 npm 설치 폴더에는 `&`를 사용하지 마세요. npm이 생성하는 Windows `.cmd` 실행기의 제한입니다. [Windows 설정과 검증 범위](./docs/mcp.md#windows)를 참고하세요.
 

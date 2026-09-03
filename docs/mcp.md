@@ -16,7 +16,7 @@ Verify the real host configuration with `codex mcp get editable-pixel` and `clau
 
 ### Windows
 
-Use the source build until the next npm release: the Windows launcher fixes are newer than `1.0.1`. Run `node packages/pixel-cli/dist/cli.js install-skill --host both` from the built checkout.
+Use `editable-pixel` version `1.0.2` or later. Install or update with `npm install -g editable-pixel@latest`, then run `editable-pixel install-skill --host both`. A source build also works: run `node packages/pixel-cli/dist/cli.js install-skill --host both` from the built checkout.
 
 The host CLIs must be on `PATH`. Registration handles npm's `codex.cmd` / `claude.cmd` wrappers as well as native executables, and stores the absolute Node executable and MCP JavaScript entrypoint as separate arguments. Paths containing spaces are supported. Skills go to `.codex/skills` or `.claude/skills` in your user profile.
 
