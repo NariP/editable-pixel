@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "editable-pixel": {
+      "command": "npx",
+      "args": ["-y", "-p", "editable-pixel@latest", "editable-pixel-mcp"]
+    }
+  }
+}
