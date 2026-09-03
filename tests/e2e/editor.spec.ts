@@ -357,8 +357,8 @@ test("layer handles smoothly reorder the visible render stack", async ({ page })
   await highlights.click();
   await expect(page.locator(".stack-item.active")).toHaveClass(/keyboard-target/);
   await expect(page.locator(".pixel-canvas-shell")).not.toHaveClass(/keyboard-target/);
-  await page.keyboard.press("Meta+C");
-  await page.keyboard.press("Meta+V");
+  await page.keyboard.press("ControlOrMeta+C");
+  await page.keyboard.press("ControlOrMeta+V");
   await expect(page.getByRole("button", { name: "Select Highlights copy layer" })).toBeVisible();
   await page.keyboard.press("Backspace");
   await expect(page.getByRole("button", { name: "Select Highlights copy layer" })).toHaveCount(0);
@@ -451,19 +451,19 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
   await page.keyboard.press("Backspace");
   await expect.poll(selectedPixels).toEqual({ pixels: [0, 0, 0, 0], selection });
   await expect(selectionStatus).toContainText("Editing within selection");
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection });
   await waitForUiSync();
 
   await page.keyboard.press("Delete");
   await expect.poll(selectedPixels).toEqual({ pixels: [0, 0, 0, 0], selection });
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection });
   await waitForUiSync();
 
-  await page.keyboard.press("Meta+X");
+  await page.keyboard.press("ControlOrMeta+X");
   await expect.poll(selectedPixels).toEqual({ pixels: [0, 0, 0, 0], selection });
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(selectedPixels).toEqual({ pixels: [1, 1, 1, 1], selection });
   await waitForUiSync();
 
@@ -473,14 +473,14 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
   await page.mouse.click(canvasBox.x + canvasBox.width * 0.05, canvasBox.y + canvasBox.height * 0.8);
   await expect.poll(async () => (await sessionState()).selection).toMatchObject({ x: 0, y: 4 });
   await waitForUiSync();
-  await page.keyboard.press("Meta+V");
+  await page.keyboard.press("ControlOrMeta+V");
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as { document: { layers: Array<{ id: string; frames: Record<string, number[]> }> } };
     return session.document.layers.find((layer) => layer.id === "artwork")!.frames["idle-1"]!.slice(32, 36);
   }).toEqual([1, 1, 1, 1]);
   await waitForUiSync();
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as { document: { layers: Array<{ id: string; frames: Record<string, number[]> }> } };
@@ -545,7 +545,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
       document.body.dataset.pixelClipboard = event.clipboardData?.getData("text/plain") ?? "";
     }, { once: true });
   });
-  await page.keyboard.press("Meta+C");
+  await page.keyboard.press("ControlOrMeta+C");
   await expect.poll(async () => {
     const serialized = await page.locator("body").getAttribute("data-pixel-clipboard");
     return serialized ? JSON.parse(serialized) : undefined;
@@ -575,7 +575,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
       (destination.selection.y + y) * destination.document.canvas.width + destination.selection.x + destination.selection.width
     )
   );
-  await page.keyboard.press("Meta+V");
+  await page.keyboard.press("ControlOrMeta+V");
 
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
@@ -597,7 +597,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
   expect(pastedPixels).toEqual(copied);
   await waitForUiSync(after.revision);
 
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const document = await response.json() as ClipboardSession;
@@ -611,13 +611,13 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
       document.body.dataset.pixelClipboardAfterUndo = event.clipboardData?.getData("text/plain") ?? "";
     }, { once: true });
   });
-  await page.keyboard.press("Meta+C");
+  await page.keyboard.press("ControlOrMeta+C");
   await expect.poll(async () => {
     const serialized = await page.locator("body").getAttribute("data-pixel-clipboard-after-undo");
     return serialized ? (JSON.parse(serialized) as { pixels: number[] }).pixels : undefined;
   }).toEqual(originalDestination.flat());
 
-  await page.keyboard.press("Meta+Shift+Z");
+  await page.keyboard.press("ControlOrMeta+Shift+Z");
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const document = await response.json() as ClipboardSession;
@@ -669,7 +669,7 @@ test("a visible Normal selection takes clipboard priority over layer focus", asy
       document.body.dataset.normalPixelClipboard = event.clipboardData?.getData("text/plain") ?? "";
     }, { once: true });
   });
-  await page.keyboard.press("Meta+C");
+  await page.keyboard.press("ControlOrMeta+C");
   await expect.poll(async () => {
     const serialized = await page.locator("body").getAttribute("data-normal-pixel-clipboard");
     return serialized ? JSON.parse(serialized) : undefined;
@@ -691,7 +691,7 @@ test("a visible Normal selection takes clipboard priority over layer focus", asy
   await expect(page.getByText("Editing within selection · 2,4 / 4×1 · Esc to clear")).toBeVisible();
   await artwork.click();
   await expect(artwork.locator("..")).toHaveClass(/keyboard-target/);
-  await page.keyboard.press("Meta+V");
+  await page.keyboard.press("ControlOrMeta+V");
 
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
@@ -726,7 +726,7 @@ test("Cmd+V stamps one copied pixel into every pixel in a multi-selection", asyn
   });
   expect(selectedSource.ok()).toBeTruthy();
   await expect(page.getByText("Editing within selection · 2,1 / 1×1 · Esc to clear")).toBeVisible();
-  await page.keyboard.press("Meta+C");
+  await page.keyboard.press("ControlOrMeta+C");
 
   const destinationSelection = {
     type: "mask",
@@ -745,7 +745,7 @@ test("Cmd+V stamps one copied pixel into every pixel in a multi-selection", asyn
   expect(selectedDestination.ok()).toBeTruthy();
   await expect(page.getByText("Editing within selection · 3 pixels · Esc to clear")).toBeVisible();
 
-  await page.keyboard.press("Meta+V");
+  await page.keyboard.press("ControlOrMeta+V");
   const selectedColors = async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as {
@@ -762,7 +762,7 @@ test("Cmd+V stamps one copied pixel into every pixel in a multi-selection", asyn
   };
   await expect.poll(selectedColors).toEqual({ colors: [1, 1, 1], selection: destinationSelection });
 
-  await page.keyboard.press("Meta+Z");
+  await page.keyboard.press("ControlOrMeta+Z");
   await expect.poll(selectedColors).toEqual({ colors: [0, 0, 0], selection: destinationSelection });
 });
 
