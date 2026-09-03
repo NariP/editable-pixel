@@ -18,6 +18,7 @@ export default defineConfig({
     "@modelcontextprotocol/server/stdio",
     "busboy",
     "commander",
+    "cross-spawn",
     "open",
     "sharp",
     "ws",

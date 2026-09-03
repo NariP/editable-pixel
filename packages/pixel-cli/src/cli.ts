@@ -33,6 +33,7 @@ import {
 import { readRegistry, registryPath, type SelectionCommand, type WebControlCommand } from "@editable-pixel/server";
 import { ClientError, PixelServerClient } from "@editable-pixel/server/client";
 import { Command, CommanderError, Option } from "commander";
+import crossSpawn from "cross-spawn";
 import open from "open";
 
 interface CliContext {
@@ -532,7 +533,7 @@ async function ensureServer(): Promise<PixelServerClient> {
       // This process owns startup and must launch the daemon.
     }
     const runner = fileURLToPath(new URL("./server-runner.js", import.meta.url));
-    const child = spawn(process.execPath, [runner], { detached: true, stdio: "ignore" });
+    const child = spawn(process.execPath, [runner], { detached: true, stdio: "ignore", windowsHide: true });
     child.unref();
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline) {
@@ -658,11 +659,12 @@ async function registerMcpHosts(
 
 function runExternal(command: string, args: string[], allowMissing = false): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Resolve npm's Windows .cmd shims and escape path arguments without shell:true.
+    const child = crossSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.stdout!.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr!.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.once("error", (error: NodeJS.ErrnoException) => {
       if (allowMissing && error.code === "ENOENT") {
         resolvePromise({ code: 127, stdout: "", stderr: error.message });
@@ -760,7 +762,9 @@ if (await isMainModule()) {
 async function isMainModule(): Promise<boolean> {
   if (!process.argv[1]) return false;
   try {
-    return await realpath(process.argv[1]) === fileURLToPath(import.meta.url);
+    // Windows launchers can use an 8.3 path (e.g. RUNNER~1) in the module URL.
+    // Canonicalize both paths, not just argv, before deciding to run the CLI.
+    return await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url));
   } catch {
     return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
   }

@@ -1,19 +1,25 @@
 import { createHash } from "node:crypto";
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import sharp from "sharp";
+import { execFile } from "./process.mjs";
+import { verifyHostRegistration } from "./host-registration.mjs";
 
-const execFile = promisify(execFileCallback);
 const temporary = await mkdtemp(join(tmpdir(), "editable-pixel-distribution-"));
 const packDirectory = join(temporary, "pack");
-const prefix = join(temporary, "install");
+// npm's generated .cmd uses an unquoted SET dp0; '&' in the install directory
+// breaks before our JS runs. Keep that upstream limit explicit in the docs.
+const prefix = join(temporary, process.platform === "win32" ? "install path (한글)" : "install path (한글) & tools");
 const registry = join(temporary, "registry.json");
 const fixture = resolve("tests/fixtures/character.pixel.json");
 const installer = resolve("install.sh");
 const environment = { ...process.env, EDITABLE_PIXEL_REGISTRY: registry };
 let daemonPid;
+let mcpClient;
 
 try {
   await mkdir(packDirectory);
@@ -50,17 +56,24 @@ try {
   const checksum = createHash("sha256").update(await readFile(archive)).digest("hex");
 
   const installEnvironment = { ...environment, EDITABLE_PIXEL_PACKAGE_SPEC: archive };
-  await execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
-  await execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
-  const binaryDirectory = join(prefix, "bin");
-  const cli = join(binaryDirectory, "editable-pixel");
-  const mcp = join(binaryDirectory, "editable-pixel-mcp");
-  const server = join(binaryDirectory, "editable-pixel-server");
+  const windows = process.platform === "win32";
+  const install = () => windows
+    ? execFile("npm", ["install", "--global", "--prefix", prefix, archive], { env: environment })
+    : execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
+  await install();
+  await install();
+  const binaryDirectory = windows ? prefix : join(prefix, "bin");
+  const extension = windows ? ".cmd" : "";
+  const cli = join(binaryDirectory, `editable-pixel${extension}`);
+  const mcp = join(binaryDirectory, `editable-pixel-mcp${extension}`);
+  const server = join(binaryDirectory, `editable-pixel-server${extension}`);
   await Promise.all([access(cli), access(mcp), access(server)]);
 
   const version = (await execFile(cli, ["--version"], { env: environment })).stdout.trim();
   const packageManifest = JSON.parse(await readFile(resolve("packages/pixel-cli/package.json"), "utf8"));
   if (version !== packageManifest.version) throw new Error(`Unexpected installed version: ${version}`);
+  const packageRoot = windows ? join(prefix, "node_modules", "editable-pixel") : join(prefix, "lib", "node_modules", "editable-pixel");
+  await verifyHostRegistration({ cli, entrypoint: join(packageRoot, "dist", "mcp.js"), temporary, environment });
   const skillRoot = join(temporary, "skills");
   const installedSkill = JSON.parse((await execFile(
     cli,
@@ -70,12 +83,27 @@ try {
   if (!installedSkill.outputs?.[0]) throw new Error("Installed CLI did not report the skill path.");
   await access(join(skillRoot, "editable-pixel", "SKILL.md"));
   await execFile(cli, ["--json", "validate", fixture], { env: environment });
+  const inputImage = join(temporary, "입력 image & frame.png");
+  const convertedFile = join(temporary, "converted.pixel.json");
+  const outputImage = join(temporary, "exported.png");
+  await sharp({ create: { width: 16, height: 16, channels: 4, background: "#f08020" } }).png().toFile(inputImage);
+  await execFile(cli, ["convert", inputImage, "--size", "64", "--output", convertedFile], { env: environment });
+  await execFile(cli, ["validate", convertedFile], { env: environment });
+  const converted = JSON.parse(await readFile(convertedFile, "utf8"));
+  assert.deepEqual(converted.canvas, { width: 64, height: 64 });
+  await execFile(cli, ["render", convertedFile, "--scale", "2", "--output", outputImage], { env: environment });
+  const exported = await sharp(outputImage).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.equal(exported.info.width, 128);
+  assert.equal(exported.info.height, 128);
+  const center = (64 * 128 + 64) * 4;
+  assert.deepEqual([...exported.data.subarray(center, center + 4)], [240, 128, 32, 255]);
   const [openedOutput, concurrentOutput] = await Promise.all([
     execFile(cli, ["--json", "open", fixture, "--host", "codex", "--no-browser"], { env: environment }),
     execFile(cli, ["--json", "open", fixture, "--host", "claude", "--no-browser"], { env: environment })
   ]);
   const opened = JSON.parse(openedOutput.stdout);
   const concurrent = JSON.parse(concurrentOutput.stdout);
+  daemonPid = JSON.parse(await readFile(registry, "utf8")).pid;
   if (!opened.sessionId || !opened.launchUrl || !concurrent.sessionId) {
     throw new Error("Installed CLI did not open concurrent isolated sessions on the shared daemon.");
   }
@@ -86,6 +114,9 @@ try {
     { cwd: temporary, env: environment }
   )).stdout);
   if (!blank.sessionId || !blank.url) throw new Error("Installed CLI did not open a source-less local editor session.");
+  const editor = await fetch(new URL("/", blank.url));
+  assert.equal(editor.status, 200);
+  assert.match(await editor.text(), /<div id="root">/);
 
   const viewHelp = (await execFile(cli, ["view", "set", "--help"], { env: environment })).stdout;
   if (!viewHelp.includes("--grid-mode") || !viewHelp.includes("isometric")) {
@@ -104,28 +135,52 @@ try {
   ], { env: environment })).stdout);
   if (restoredSelection.selection !== null) throw new Error("Installed CLI diamond selection did not share Undo.");
 
-  const daemon = JSON.parse(await readFile(registry, "utf8"));
-  daemonPid = daemon.pid;
-  const mcpProcess = spawn(mcp, [], { env: environment, stdio: ["pipe", "pipe", "pipe"] });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-  if (mcpProcess.exitCode !== null) throw new Error("Installed MCP executable exited during startup.");
-  mcpProcess.kill("SIGTERM");
+  mcpClient = new Client({ name: "distribution-smoke", version: "1.0.0" });
+  const transport = new StdioClientTransport({ command: mcp, env: environment, stderr: "pipe" });
+  transport.stderr?.on("data", () => {});
+  await mcpClient.connect(transport);
+  assert.equal(mcpClient.getServerVersion().version, packageManifest.version);
+  const catalog = await mcpClient.listTools();
+  for (const tool of ["get_metadata", "get_design_context", "set_selection", "use_editable_pixel", "control_web"]) {
+    assert.ok(catalog.tools.some(({ name }) => name === tool), `Installed MCP is missing ${tool}.`);
+  }
+  const sessions = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
+  assert.notEqual(sessions.isError, true);
+  assert.ok(JSON.stringify(sessions).includes(blank.sessionId), "MCP must connect to the same CLI daemon.");
+  await mcpClient.close();
+  mcpClient = undefined;
   await execFile(cli, ["session", "close", opened.sessionId], { env: environment });
   await execFile(cli, ["session", "close", concurrent.sessionId], { env: environment });
   await execFile(cli, ["session", "close", blank.sessionId], { env: environment });
 
-  await execFile("sh", [installer, "--uninstall", "--prefix", prefix], { env: environment });
-  try {
-    await access(cli);
-    throw new Error("CLI binary remained after uninstall.");
-  } catch (error) {
-    if (error instanceof Error && error.message === "CLI binary remained after uninstall.") throw error;
-  }
+  // Stop the installed daemon before uninstalling files (Windows keeps executables open).
+  await stopDaemon();
+  if (windows) await execFile("npm", ["uninstall", "--global", "--prefix", prefix, "editable-pixel"], { env: environment });
+  else await execFile("sh", [installer, "--uninstall", "--prefix", prefix], { env: environment });
+  await assert.rejects(access(cli), { code: "ENOENT" }, "CLI binary remained after uninstall.");
 
   process.stdout.write(`Distribution install, update, execution, and removal passed (archive SHA256 fingerprint: ${checksum.slice(0, 12)}…).\n`);
 } finally {
-  if (daemonPid) {
-    try { process.kill(daemonPid, "SIGTERM"); } catch { /* already stopped */ }
+  await mcpClient?.close();
+  await stopDaemon();
+  await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+
+async function stopDaemon() {
+  // Even a failed concurrent open may have started our isolated daemon.
+  if (!daemonPid) {
+    try { daemonPid = JSON.parse(await readFile(registry, "utf8")).pid; } catch { return; }
   }
-  await rm(temporary, { recursive: true, force: true });
+  try { process.kill(daemonPid, "SIGTERM"); } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { process.kill(daemonPid, 0); } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+      daemonPid = undefined;
+      return;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error("The distribution-test daemon did not stop.");
 }

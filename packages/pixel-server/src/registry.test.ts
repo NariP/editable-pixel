@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { registryPath } from "./registry.js";
@@ -19,7 +22,7 @@ describe("server registry", () => {
     const first = registryPath();
     process.env.TMPDIR = "/tmp/another-host";
     expect(registryPath()).toBe(first);
-    expect(first).toMatch(/\.editable-pixel\/server\.json$/);
+    expect(first).toBe(join(homedir(), ".editable-pixel", "server.json"));
   });
 
   it("allows isolated tests and managed hosts to override the path", () => {
