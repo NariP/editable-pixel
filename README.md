@@ -1,12 +1,18 @@
 # Editable Pixel
 
-[한국어](./README.ko.md) · [Examples](#before-and-after) · [Run locally](#run-locally) · [Connect your agent](#connect-codex-or-claude)
+[한국어](./README.ko.md) · [Demo video](#demo-video) · [Examples](#before-and-after) · [Run locally](#run-locally) · [Connect your agent](#connect-codex-or-claude)
 
 **Keep the sprite. Change exactly what you mean.**
 
 A local pixel-art workbench for people creating assets with AI. Import a generated image or sprite sheet, convert it to an editable pixel grid, and refine it in the browser—or ask **Codex or Claude** to edit the same canvas through MCP.
 
 Change a character's color scheme without redrawing it. Align animation frames. Edit exact pixels, paint normal maps, and export the result.
+
+## Demo video
+
+[![Watch the Editable Pixel demo: edit generated sprites with Codex or Claude](./docs/media/promo-preview.jpg)](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4)
+
+[▶ Watch the 40-second demo](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4) — full-palette recoloring, frame alignment, and a Lit PNG showcase. Korean captions with music; click the thumbnail to open the video.
 
 ## Before and after
 

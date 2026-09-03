@@ -1,12 +1,20 @@
 # Editable Pixel
 
-[English](./README.md) · [비포·애프터](#before-and-after) · [로컬 실행](#로컬-실행) · [AI 연결](#connect-ai)
+[English](./README.md) · [데모 영상](#demo-video) · [비포·애프터](#before-and-after) · [로컬 실행](#로컬-실행) · [AI 연결](#connect-ai)
 
 **마음에 드는 스프라이트는 그대로, 고치고 싶은 부분은 말로.**
 
 AI로 이미지 에셋을 만드는 사람을 위한 로컬 픽셀 편집기입니다. 생성한 이미지나 스프라이트 시트를 실제 픽셀 그리드로 변환하고, 브라우저에서 직접 편집하거나 **Codex·Claude에 말해 같은 캔버스를 MCP로 수정**할 수 있습니다.
 
 캐릭터를 다시 그리지 않고 색상을 바꾸고, 애니메이션 위치를 맞추고, 특정 픽셀과 노멀맵을 손본 뒤 결과물을 내보내세요.
+
+<a id="demo-video"></a>
+
+## 데모 영상
+
+[![Codex·Claude에 말해 생성한 스프라이트를 수정하는 Editable Pixel 데모 영상](./docs/media/promo-preview.jpg)](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4)
+
+[▶ 40초 데모 보기](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4) — 팔레트 전체 교체, 프레임 위치 정렬, Lit PNG 출력 예시를 담았습니다. 한국어 자막과 BGM이 있으며, 썸네일을 누르면 영상이 열립니다.
 
 <a id="before-and-after"></a>
 
