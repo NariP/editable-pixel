@@ -64,9 +64,19 @@ Set Frame 1 to 160 ms and Frame 4 to 100 ms.
 
 ## Run locally
 
-**Pre-release:** the npm package has not been published yet. Use the source build below. The npm and install-script workflows are prepared, but are not live installation options yet.
+Requires **Node.js 20.9+**. This starts a local editor, not a hosted web service.
 
-Requires **Node.js 20.9+** and **pnpm 10.29.3**. This starts a local editor, not a hosted web service.
+```bash
+npm install --global editable-pixel
+editable-pixel open
+```
+
+**Windows:** use the source build below until the next npm release; the Windows launcher fixes are not in `1.0.1`. Use PowerShell or Command Prompt, not `install.sh`. If PowerShell blocks npm's `.ps1` launcher, run `npm.cmd` / `editable-pixel.cmd` instead; changing your execution policy is not required.
+
+Use an npm installation directory without `&`; npm's Windows `.cmd` wrapper cannot launch from that path. See [Windows setup and test coverage](./docs/mcp.md#windows).
+
+<details>
+<summary>Build from source (requires pnpm 10.29.3)</summary>
 
 ```bash
 git clone https://github.com/NariP/editable-pixel.git
@@ -84,13 +94,10 @@ node packages/pixel-cli/dist/cli.js open character.pixel-project.json
 node packages/pixel-cli/dist/cli.js open character.pixel.json
 ```
 
-<details>
-<summary>After the npm release: install, update, or remove</summary>
+</details>
 
-```bash
-npm install --global editable-pixel
-editable-pixel open
-```
+<details>
+<summary>Install script, update, or remove</summary>
 
 Alternatively, on macOS or Linux, review [install.sh](./install.sh) and run:
 
@@ -98,7 +105,7 @@ Alternatively, on macOS or Linux, review [install.sh](./install.sh) and run:
 curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
 ```
 
-The script installs the npm package, so it also requires a published release. Running it again updates the installation; `sh install.sh --version X.Y.Z` selects a release.
+The script installs the published npm package. Running it again updates the installation; `sh install.sh --version X.Y.Z` selects a release.
 
 ```bash
 npm update --global editable-pixel
@@ -111,13 +118,13 @@ Uninstalling the package does not delete exported files or browser-local Project
 
 ## Connect Codex or Claude
 
-From the built repository:
+With the npm installation:
 
 ```bash
-node packages/pixel-cli/dist/cli.js install-skill --host both
+editable-pixel install-skill --host both
 ```
 
-Use `--host codex` or `--host claude` to register only one host. This installs the bundled **Skill** and registers the local **MCP server**. Restart the host or reload its MCP connections, then ask it to open and edit your Project. Keep the repository at its installed path: the registration points to the built executable there.
+Use `--host codex` or `--host claude` to register only one host. This installs the bundled **Skill** and registers the local **MCP server**. Restart the host or reload its MCP connections, then ask it to open and edit your Project. From a source build, use `node packages/pixel-cli/dist/cli.js install-skill --host both` instead and keep that repository at its installed path: the registration points to the built executable there.
 
 The Skill guides the agent to read metadata first, inspect only the relevant region, and apply edits to the same Project you see. See [host setup and MCP tools](./docs/mcp.md).
 

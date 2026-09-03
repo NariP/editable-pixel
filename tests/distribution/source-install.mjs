@@ -1,11 +1,9 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { execFile, spawn } from "./process.mjs";
 
-const execFile = promisify(execFileCallback);
 const sourceRoot = resolve(".");
 const temporary = await mkdtemp(join(tmpdir(), "editable-pixel-source-install-"));
 const checkout = join(temporary, "repo");

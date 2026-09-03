@@ -37,6 +37,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "busboy": "1.6.0",
     "commander": "15.0.0",
+    "cross-spawn": "7.0.6",
     "open": "11.0.1",
     "sharp": "0.35.3",
     "ws": "8.21.3",
@@ -50,6 +51,7 @@
     "@editable-pixel/project": "workspace:*",
     "@editable-pixel/renderer": "workspace:*",
     "@editable-pixel/server": "workspace:*",
+    "@types/cross-spawn": "6.0.6",
     "tsup": "8.5.1"
   }
 }
