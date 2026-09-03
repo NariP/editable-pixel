@@ -2,6 +2,14 @@
 
 The palette and grounding comparisons use actual Editable Pixel exports from the robot fixture in [robot-hop-8](../test-assets/robot-hop-8/), with eight 128×128 frames. The lighting showcase uses the separately supplied [evaluation-fixture-lit.png](./evaluation-fixture-lit.png), a 128×128 RGBA image. Remotion 4.0.520 composes the labels; sprite images use integer display scales without filtering.
 
+## Promo video
+
+- [Watch the current promo](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4): 40 seconds, 1920×1080, 30 fps, H.264 video with AAC audio. Korean captions and instrumental music.
+- This is the approved Remotion render with the selected Lit PNG showcase, copied without re-encoding. SHA-256: `be1636f9068a9a7e78fc48633aa92c5491884f769a1fa44133c4c5253b4e86b1`.
+- [README thumbnail](./promo-preview.jpg): extracted from the video at 3 seconds.
+- Music: **Pixel Sprinter** by **Zane Little Music**, [source on OpenGameArt](https://opengameart.org/content/pixel-sprinter), [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). The video uses the first 40 seconds with reduced volume and fades.
+- The MP4 lives in `.github/media/` so it does not add to the npm installation size. The README links to the GitHub-hosted file.
+
 ## What each example demonstrates
 
 | Image | Change | Preserved |
