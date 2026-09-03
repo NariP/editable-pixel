@@ -10,9 +10,9 @@ Change a character's color scheme without redrawing it. Align animation frames. 
 
 ## Demo video
 
-[![Watch the Editable Pixel demo: edit generated sprites with Codex or Claude](./docs/media/promo-preview.jpg)](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4)
+https://github.com/user-attachments/assets/cd54beff-7445-4f5a-83be-fcb16d0de2c9
 
-[▶ Watch the 40-second demo](https://github.com/NariP/editable-pixel/blob/main/.github/media/editable-pixel-demo.mp4) — full-palette recoloring, frame alignment, and a Lit PNG showcase. Korean captions with music; click the thumbnail to open the video.
+40 seconds of full-palette recoloring, frame alignment, and a Lit PNG showcase. Korean captions with music; play the video above directly on GitHub.
 
 ## Before and after
 
