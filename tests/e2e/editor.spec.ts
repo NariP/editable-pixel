@@ -470,13 +470,21 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
   const canvasBox = await canvas.boundingBox();
   if (!canvasBox) throw new Error("Pixel canvas is not visible.");
   await page.mouse.click(canvasBox.x + canvasBox.width * 0.05, canvasBox.y + canvasBox.height * 0.8);
+  await expect.poll(async () => (await sessionState()).selection).toMatchObject({ x: 0, y: 4 });
+  await waitForUiSync();
   await page.keyboard.press("Meta+V");
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const session = await response.json() as { document: { layers: Array<{ id: string; frames: Record<string, number[]> }> } };
     return session.document.layers.find((layer) => layer.id === "artwork")!.frames["idle-1"]!.slice(32, 36);
   }).toEqual([1, 1, 1, 1]);
+  await waitForUiSync();
   await page.keyboard.press("Meta+Z");
+  await expect.poll(async () => {
+    const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
+    const session = await response.json() as { document: { layers: Array<{ id: string; frames: Record<string, number[]> }> } };
+    return session.document.layers.find((layer) => layer.id === "artwork")!.frames["idle-1"]!.slice(32, 36);
+  }).toEqual([0, 0, 0, 0]);
   await waitForUiSync();
   await page.keyboard.press("Escape");
   await expect.poll(async () => (await sessionState()).selection).toBeNull();
@@ -485,6 +493,19 @@ test("Delete, Backspace, and Cmd+X clear selected pixels while Escape only desel
 
 test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomically", async ({ page, request }) => {
   const created = await createSession(request);
+  // Keep the server behind the optimistic canvas to exercise real commit completion.
+  await page.routeWebSocket(`**/api/sessions/${created.session.id}/ws?*`, (socket) => {
+    const server = socket.connectToServer();
+    let messages = Promise.resolve();
+    socket.onMessage((message) => {
+      messages = messages.then(async () => {
+        if (JSON.parse(String(message)).type === "document.patch") {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        server.send(message);
+      });
+    });
+  });
   await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
   await expect(page.locator(".status-connected")).toBeVisible();
 
@@ -502,7 +523,14 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
       layers: Array<{ id: string; frames: Record<string, number[]> }>;
     };
   };
+  const waitForUiSync = async (revision: number) => {
+    await expect.poll(async () => {
+      const status = await page.locator(".canvas-footer span").first().textContent();
+      return Number(status?.match(/revision (\d+)\./)?.[1] ?? -1);
+    }).toBeGreaterThanOrEqual(revision);
+  };
   const before = await beforeResponse.json() as ClipboardSession;
+  await waitForUiSync(before.revision);
   const sourcePixels = before.document.layers.find((layer) => layer.id === before.selection.layerId)!.frames[before.selection.frameId]!;
   const copied = Array.from({ length: before.selection.height }, (_, y) =>
     sourcePixels.slice(
@@ -538,6 +566,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
   }).toBeDefined();
   const destinationResponse = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
   const destination = await destinationResponse.json() as ClipboardSession;
+  await waitForUiSync(destination.revision);
   const destinationPixels = destination.document.layers.find((layer) => layer.id === destination.selection.layerId)!.frames[destination.selection.frameId]!;
   const originalDestination = Array.from({ length: destination.selection.height }, (_, y) =>
     destinationPixels.slice(
@@ -550,7 +579,8 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
   await expect.poll(async () => {
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     const document = await response.json() as ClipboardSession;
-    return document.revision > before.revision ? document : undefined;
+    // Selecting the destination already advanced the revision; wait for the paste itself.
+    return document.revision > destination.revision ? document : undefined;
   }).toBeDefined();
   const afterResponse = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
   const after = await afterResponse.json() as ClipboardSession;
@@ -564,6 +594,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
     )
   );
   expect(pastedPixels).toEqual(copied);
+  await waitForUiSync(after.revision);
 
   await page.keyboard.press("Meta+Z");
   await expect.poll(async () => {
@@ -573,6 +604,7 @@ test("Cmd+C and V paste at a newly selected destination and Cmd+Z undoes atomica
   }).toMatchObject(destination.selection);
   const undoneResponse = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
   const undone = await undoneResponse.json() as ClipboardSession;
+  await waitForUiSync(undone.revision);
   await page.evaluate(() => {
     window.addEventListener("copy", (event) => {
       document.body.dataset.pixelClipboardAfterUndo = event.clipboardData?.getData("text/plain") ?? "";
