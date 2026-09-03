@@ -48,7 +48,6 @@ try {
     if (!listing.includes(required)) throw new Error(`Package is missing ${required}.`);
   }
   const checksum = createHash("sha256").update(await readFile(archive)).digest("hex");
-  if (!/^[0-9a-f]{64}$/.test(checksum)) throw new Error("Package checksum was not generated.");
 
   const installEnvironment = { ...environment, EDITABLE_PIXEL_PACKAGE_SPEC: archive };
   await execFile("sh", [installer, "--prefix", prefix], { env: installEnvironment });
@@ -122,7 +121,7 @@ try {
     if (error instanceof Error && error.message === "CLI binary remained after uninstall.") throw error;
   }
 
-  process.stdout.write(`Distribution install, update, execution, checksum, and removal passed (${checksum.slice(0, 12)}…).\n`);
+  process.stdout.write(`Distribution install, update, execution, and removal passed (archive SHA256 fingerprint: ${checksum.slice(0, 12)}…).\n`);
 } finally {
   if (daemonPid) {
     try { process.kill(daemonPid, "SIGTERM"); } catch { /* already stopped */ }
