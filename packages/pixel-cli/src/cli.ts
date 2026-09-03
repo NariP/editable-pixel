@@ -52,7 +52,7 @@ export function createProgram(context: CliContext = defaultContext): Command {
   const program = new Command()
     .name("editable-pixel")
     .description("Convert and edit AI-generated pixel assets as deterministic Pixel Documents.")
-    .version("1.0.1")
+    .version("1.0.2")
     .option("--json", "print stable machine-readable JSON")
     .configureOutput({
       writeOut: (text) => context.write(text.trimEnd()),

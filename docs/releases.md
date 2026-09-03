@@ -28,6 +28,15 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Compatibility policy
 
+### 1.0.2
+
+- Adds Windows x64 npm installation support, including Codex/Claude `.cmd` launcher handling and CLI startup from Windows short (8.3) paths.
+- Fixes `install.sh` version checks when the installation path contains spaces.
+- Verifies Windows x64 and Linux with unit/integration tests, Chromium E2E, packaged install/update/remove, conversion/rendering, MCP stdio, and clean source installation.
+- Tests host registration with isolated fixture CLIs; authenticated Codex/Claude GUI integration, default-browser launching, and Windows ARM64 remain unverified.
+- Requires Windows npm installation paths without `&` because of an upstream npm `.cmd` wrapper limitation. Image file arguments containing `&` are supported.
+- Remains compatible with Pixel Document version `1`.
+
 ### 1.0.1
 
 - Publishes the current main-branch CLI, browser editor, local server, MCP, and skill bundle.
