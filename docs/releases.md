@@ -28,6 +28,15 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Compatibility policy
 
+### 1.0.1
+
+- Publishes the current main-branch CLI, browser editor, local server, MCP, and skill bundle.
+- Fixes npm tarball path handling in the release workflow.
+- Includes the updated README demo and browser/MCP parity regression coverage.
+- Remains compatible with Pixel Document version `1`.
+
+### Versioning rules
+
 - Pixel Document `version` changes only when the on-disk schema is incompatible.
 - Supported older formats are migrated explicitly; future formats are rejected.
 - CLI JSON shapes and MCP tool input/output schemas are public interfaces. Breaking changes require a major package version.

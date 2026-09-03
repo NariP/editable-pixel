@@ -59,7 +59,8 @@ try {
   await Promise.all([access(cli), access(mcp), access(server)]);
 
   const version = (await execFile(cli, ["--version"], { env: environment })).stdout.trim();
-  if (version !== "1.0.0") throw new Error(`Unexpected installed version: ${version}`);
+  const packageManifest = JSON.parse(await readFile(resolve("packages/pixel-cli/package.json"), "utf8"));
+  if (version !== packageManifest.version) throw new Error(`Unexpected installed version: ${version}`);
   const skillRoot = join(temporary, "skills");
   const installedSkill = JSON.parse((await execFile(
     cli,

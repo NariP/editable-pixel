@@ -45,7 +45,7 @@ jobs:
           cd release-artifacts
           shasum -a 256 editable-pixel-*.tgz editable-pixel-skill-*.tar.gz > SHA256SUMS
       - name: Publish npm package
-        run: npm publish "release-artifacts/editable-pixel-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
+        run: npm publish "./release-artifacts/editable-pixel-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub Release
