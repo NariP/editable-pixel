@@ -762,7 +762,9 @@ if (await isMainModule()) {
 async function isMainModule(): Promise<boolean> {
   if (!process.argv[1]) return false;
   try {
-    return await realpath(process.argv[1]) === fileURLToPath(import.meta.url);
+    // Windows launchers can use an 8.3 path (e.g. RUNNER~1) in the module URL.
+    // Canonicalize both paths, not just argv, before deciding to run the CLI.
+    return await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url));
   } catch {
     return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
   }
