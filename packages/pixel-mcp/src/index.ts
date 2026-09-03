@@ -188,7 +188,7 @@ export function createEditablePixelMcpServer(
   connect: () => Promise<PixelServerClient> = () => PixelServerClient.connect("mcp")
 ): McpServer {
   const server = new McpServer(
-    { name: "editable-pixel-mcp-server", version: "1.0.0" },
+    { name: "editable-pixel-mcp-server", version: "1.0.1" },
     {
       instructions: "Use get_metadata first, then get_design_context only for the target area. Use get_web_context for browser-only state. Use set_selection and use_editable_pixel for document edits, control_web for semantic UI/project workflows, import_files for local inputs, and export_web for the browser's export formats. AI edits share the browser Selection, History, revision, Undo, Redo, and autosave. Screenshots are optional QA, not an approval gate."
     }
