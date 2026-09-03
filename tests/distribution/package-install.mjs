@@ -11,7 +11,9 @@ import { verifyHostRegistration } from "./host-registration.mjs";
 
 const temporary = await mkdtemp(join(tmpdir(), "editable-pixel-distribution-"));
 const packDirectory = join(temporary, "pack");
-const prefix = join(temporary, "install path (한글) & tools");
+// npm's generated .cmd uses an unquoted SET dp0; '&' in the install directory
+// breaks before our JS runs. Keep that upstream limit explicit in the docs.
+const prefix = join(temporary, process.platform === "win32" ? "install path (한글)" : "install path (한글) & tools");
 const registry = join(temporary, "registry.json");
 const fixture = resolve("tests/fixtures/character.pixel.json");
 const installer = resolve("install.sh");
@@ -81,7 +83,7 @@ try {
   if (!installedSkill.outputs?.[0]) throw new Error("Installed CLI did not report the skill path.");
   await access(join(skillRoot, "editable-pixel", "SKILL.md"));
   await execFile(cli, ["--json", "validate", fixture], { env: environment });
-  const inputImage = join(temporary, "입력 image.png");
+  const inputImage = join(temporary, "입력 image & frame.png");
   const convertedFile = join(temporary, "converted.pixel.json");
   const outputImage = join(temporary, "exported.png");
   await sharp({ create: { width: 16, height: 16, channels: 4, background: "#f08020" } }).png().toFile(inputImage);

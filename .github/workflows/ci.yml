@@ -27,11 +27,11 @@ jobs:
           node-version: 20.19.5
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm verify
-      - run: pnpm test:e2e
       - run: pnpm test:distribution
       - run: pnpm test:source-install
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

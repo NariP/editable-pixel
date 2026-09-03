@@ -73,6 +73,8 @@ editable-pixel open
 
 **Windows:** use the source build below until the next npm release; the Windows launcher fixes are not in `1.0.1`. Use PowerShell or Command Prompt, not `install.sh`. If PowerShell blocks npm's `.ps1` launcher, run `npm.cmd` / `editable-pixel.cmd` instead; changing your execution policy is not required.
 
+Use an npm installation directory without `&`; npm's Windows `.cmd` wrapper cannot launch from that path. See [Windows setup and test coverage](./docs/mcp.md#windows).
+
 <details>
 <summary>Build from source (requires pnpm 10.29.3)</summary>
 

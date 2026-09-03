@@ -22,6 +22,8 @@ The host CLIs must be on `PATH`. Registration handles npm's `codex.cmd` / `claud
 
 In PowerShell, use `npm.cmd`, `pnpm.cmd`, or `editable-pixel.cmd` if script execution policy blocks the corresponding `.ps1` wrapper. No execution-policy change is necessary. `install.sh` is macOS/Linux-only.
 
+Avoid `&` in Windows npm installation directories, including those of the host CLIs. npm's generated `.cmd` wrapper assigns its directory without quoting and fails before the application starts. This is an upstream launcher limitation, not a Pixel Document restriction; use an installation directory without `&`.
+
 Windows x64 and Linux CI run the full verification, Chromium editor E2E, packaged install/update/remove, conversion/rendering, MCP stdio handshake/tool call, and clean source-install checks. Automatic registration is tested with isolated fixture host CLIs (real npm `.cmd` shims on Windows), not authenticated Codex/Claude accounts. The checks do not verify the host applications' GUI, system default-browser launching, or Windows ARM64.
 
 Open a Project or Pixel Document:
