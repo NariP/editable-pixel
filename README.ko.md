@@ -68,9 +68,17 @@ Frame 1은 160ms, Frame 4는 100ms로 설정해줘.
 
 ## 로컬 실행
 
-**배포 준비 단계입니다.** npm 패키지는 아직 공개되지 않았으므로 아래 소스 빌드를 사용하세요. npm·install.sh 배포 경로는 준비되어 있지만 아직 설치 가능한 공개 릴리스는 아닙니다.
+**Node.js 20.9 이상**이 필요합니다. 별도 웹 서비스에 접속하는 방식이 아니라 내 컴퓨터에서 편집기를 실행합니다.
 
-**Node.js 20.9 이상**, **pnpm 10.29.3**이 필요합니다. 별도 웹 서비스에 접속하는 방식이 아니라 내 컴퓨터에서 편집기를 실행합니다.
+```bash
+npm install --global editable-pixel
+editable-pixel open
+```
+
+**Windows:** 다음 npm 릴리스까지는 아래 소스 빌드를 사용하세요. Windows 실행기 수정은 `1.0.1`에 포함되지 않았습니다. `install.sh` 대신 PowerShell이나 명령 프롬프트를 사용합니다. PowerShell이 npm의 `.ps1` 실행을 차단하면 실행 정책을 변경하지 말고 `npm.cmd` / `editable-pixel.cmd`로 실행하세요.
+
+<details>
+<summary>소스에서 빌드하기 (pnpm 10.29.3 필요)</summary>
 
 ```bash
 git clone https://github.com/NariP/editable-pixel.git
@@ -88,13 +96,10 @@ node packages/pixel-cli/dist/cli.js open character.pixel-project.json
 node packages/pixel-cli/dist/cli.js open character.pixel.json
 ```
 
-<details>
-<summary>npm 배포 이후: 설치·업데이트·제거</summary>
+</details>
 
-```bash
-npm install --global editable-pixel
-editable-pixel open
-```
+<details>
+<summary>설치 스크립트·업데이트·제거</summary>
 
 macOS·Linux에서는 [install.sh](./install.sh)를 확인한 뒤 아래 명령을 사용할 수도 있습니다.
 
@@ -102,7 +107,7 @@ macOS·Linux에서는 [install.sh](./install.sh)를 확인한 뒤 아래 명령�
 curl -fsSL https://raw.githubusercontent.com/NariP/editable-pixel/main/install.sh | sh
 ```
 
-이 스크립트도 npm 패키지를 설치하므로 공개 릴리스가 먼저 필요합니다. 다시 실행하면 업데이트되며, `sh install.sh --version X.Y.Z`로 버전을 지정할 수 있습니다.
+스크립트는 공개된 npm 패키지를 설치합니다. 다시 실행하면 업데이트되며, `sh install.sh --version X.Y.Z`로 버전을 지정할 수 있습니다.
 
 ```bash
 npm update --global editable-pixel
@@ -117,13 +122,13 @@ npm uninstall --global editable-pixel
 
 ## Codex·Claude 연결
 
-빌드한 저장소에서 실행합니다.
+npm으로 설치했다면 아래 명령을 실행합니다.
 
 ```bash
-node packages/pixel-cli/dist/cli.js install-skill --host both
+editable-pixel install-skill --host both
 ```
 
-한쪽만 연결하려면 `--host codex` 또는 `--host claude`를 사용하세요. 포함된 **Skill**을 설치하고 로컬 **MCP 서버**를 등록합니다. 호스트를 다시 시작하거나 MCP 연결을 새로 고친 뒤 Project를 열고 편집해 달라고 요청하세요. MCP가 해당 경로의 실행 파일을 참조하므로 설치 후 저장소 폴더를 유지해야 합니다.
+한쪽만 연결하려면 `--host codex` 또는 `--host claude`를 사용하세요. 포함된 **Skill**을 설치하고 로컬 **MCP 서버**를 등록합니다. 호스트를 다시 시작하거나 MCP 연결을 새로 고친 뒤 Project를 열고 편집해 달라고 요청하세요. 소스 빌드에서는 `node packages/pixel-cli/dist/cli.js install-skill --host both`를 사용합니다. 이 경우 MCP가 해당 경로의 실행 파일을 참조하므로 저장소 폴더를 유지해야 합니다.
 
 Skill은 메타데이터부터 읽고, 필요한 영역만 확인한 뒤, 사용자가 보고 있는 같은 Project에 편집을 적용하도록 안내합니다. 자세한 내용은 [호스트 설정과 MCP 도구](./docs/mcp.md)를 확인하세요.
 

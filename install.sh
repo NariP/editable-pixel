@@ -101,7 +101,7 @@ if [ ! -x "$binary" ]; then
   exit 1
 fi
 
-installed_version="$($binary --version)"
+installed_version="$("$binary" --version)"
 echo "Installed Editable Pixel $installed_version."
 echo "Run: $binary open"
 case ":${PATH:-}:" in

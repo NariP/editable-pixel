@@ -10,7 +10,13 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -26,3 +32,12 @@ jobs:
       - run: pnpm test:e2e
       - run: pnpm test:distribution
       - run: pnpm test:source-install
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-${{ matrix.os }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
