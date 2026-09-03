@@ -121,6 +121,8 @@ describe("Editable Pixel web editor", () => {
     expect(screen.getByRole("tab", { name: "Frames" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Agent" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Content Frame" })).toBeTruthy();
+    expect(screen.getByLabelText("Content frame 32 by 32")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Content alignment" }).textContent).toContain("Center");
     expect(screen.getByRole("button", { name: "Select" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Line" })).toBeNull();
     expect(screen.getAllByRole("button", { name: /^Import$/ })).toHaveLength(1);
@@ -575,11 +577,6 @@ describe("Editable Pixel web editor", () => {
     expect(select.getAttribute("data-icon-style")).toBe("line");
   });
 
-  it("shows the applied Content Frame as a non-export guide", () => {
-    render(<App />);
-    expect(screen.getByLabelText("Content frame 32 by 32")).toBeTruthy();
-  });
-
   it("uses a selectable solid canvas background with a transparent thumbnail preview", async () => {
     const { container } = render(<App />);
     const shell = container.querySelector(".pixel-canvas-shell") as HTMLElement;
@@ -591,11 +588,6 @@ describe("Editable Pixel web editor", () => {
 
     expect(shell.style.backgroundColor).toBe("rgb(23, 26, 23)");
     expect(window.sessionStorage.getItem("editable-pixel:canvas-background")).toBe("#171a17");
-  });
-
-  it("defaults Content Frame alignment to the center", () => {
-    render(<App />);
-    expect(screen.getByRole("combobox", { name: "Content alignment" }).textContent).toContain("Center");
   });
 
   it("only offers background modes available in the web editor", () => {
@@ -629,11 +621,20 @@ describe("Editable Pixel web editor", () => {
     expect(screen.getByRole("button", { name: "Save current preset" }).closest("fieldset")?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("explains Background and Dither from their labels", () => {
+  it("opens Background and Dither help on focus and closes it on blur or Escape", async () => {
     render(<App />);
 
-    expect(screen.getByRole("button", { name: "About Background" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "About Dither" })).toBeTruthy();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    const backgroundHelp = screen.getByRole("button", { name: "About Background" });
+    fireEvent.focus(backgroundHelp);
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Alpha keeps transparency already in the image.");
+    fireEvent.blur(backgroundHelp);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+
+    fireEvent.focus(screen.getByRole("button", { name: "About Dither" }));
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Floyd mixes nearby palette colors into a pixel pattern to preserve gradients.");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
 
   it("uses Tight and Safe as actions while editing a custom scale", () => {
@@ -658,6 +659,49 @@ describe("Editable Pixel web editor", () => {
     fireEvent.click(safePreset);
     expect((customScale as HTMLInputElement).value).toBe("80");
   });
+
+  it.each([
+    { draft: "invalid", committed: "80", scale: "0.8" },
+    { draft: "", committed: "25", scale: "0.25" },
+    { draft: "24", committed: "25", scale: "0.25" },
+    { draft: "101", committed: "100", scale: "1" },
+    { draft: "72.6", committed: "73", scale: "0.73" }
+  ])("validates the custom scale draft '$draft' only on blur", ({ draft, committed, scale }) => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /Safe 80%/ }));
+    const input = screen.getByRole("textbox", { name: "Custom content frame scale" }) as HTMLInputElement;
+    const slider = screen.getByRole("slider", { name: "Content frame scale" }) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: draft } });
+    expect(input.value).toBe(draft);
+    expect(slider.value).toBe("0.8");
+    fireEvent.blur(input);
+    expect(input.value).toBe(committed);
+    expect(slider.value).toBe(scale);
+  });
+
+  it("commits the focused custom scale on Enter through blur", () => {
+    render(<App />);
+    const input = screen.getByRole("textbox", { name: "Custom content frame scale" }) as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: "72" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(document.activeElement).not.toBe(input);
+    expect((screen.getByRole("slider", { name: "Content frame scale" }) as HTMLInputElement).value).toBe("0.72");
+  });
+
+  it.each([{ draft: "1", committed: "2" }, { draft: "257", committed: "256" }])(
+    "clamps the Color count draft '$draft' to the web input range on blur",
+    ({ draft, committed }) => {
+      render(<App />);
+      const input = screen.getByRole("textbox", { name: "Color count" }) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: draft } });
+      expect(input.value).toBe(draft);
+      fireEvent.blur(input);
+      expect(input.value).toBe(committed);
+    }
+  );
 
   it("edits the Fixed Palette with color inputs instead of raw text", () => {
     render(<App />);

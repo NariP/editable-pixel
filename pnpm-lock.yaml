@@ -277,6 +277,9 @@ importers:
       '@editable-pixel/document':
         specifier: workspace:*
         version: link:../packages/pixel-document
+      '@editable-pixel/mcp':
+        specifier: workspace:*
+        version: link:../packages/pixel-mcp
       '@editable-pixel/renderer':
         specifier: workspace:*
         version: link:../packages/pixel-renderer
@@ -287,6 +290,9 @@ importers:
         specifier: 0.35.3
         version: 0.35.3(@types/node@24.10.4)
     devDependencies:
+      '@modelcontextprotocol/client':
+        specifier: 2.0.0
+        version: 2.0.0
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
