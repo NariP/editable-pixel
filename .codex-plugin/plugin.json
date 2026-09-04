@@ -1,0 +1,21 @@
+{
+  "name": "editable-pixel",
+  "version": "1.0.2",
+  "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
+  "author": { "name": "NariP" },
+  "homepage": "https://github.com/NariP/editable-pixel#readme",
+  "repository": "https://github.com/NariP/editable-pixel",
+  "license": "MIT",
+  "keywords": ["pixel-art", "sprite", "mcp", "codex", "claude", "local-first"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Editable Pixel",
+    "shortDescription": "Inspect and edit live AI pixel assets",
+    "defaultPrompt": "Use $editable-pixel to inspect the active Project with sparse context, select the requested pixels in the shared editor, apply the edit immediately, and keep it recoverable through shared Undo/Redo.",
+    "developerName": "NariP",
+    "category": "Creativity",
+    "capabilities": ["Read", "Write", "Interactive"],
+    "websiteURL": "https://github.com/NariP/editable-pixel"
+  }
+}

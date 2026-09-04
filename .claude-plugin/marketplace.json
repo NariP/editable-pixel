@@ -1,0 +1,18 @@
+{
+  "name": "editable-pixel",
+  "owner": { "name": "NariP", "url": "https://github.com/NariP" },
+  "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
+  "plugins": [
+    {
+      "name": "editable-pixel",
+      "source": "./",
+      "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
+      "version": "1.0.2",
+      "author": { "name": "NariP" },
+      "homepage": "https://github.com/NariP/editable-pixel#readme",
+      "repository": "https://github.com/NariP/editable-pixel",
+      "license": "MIT",
+      "keywords": ["pixel-art", "sprite", "mcp", "codex", "claude", "local-first"]
+    }
+  ]
+}
