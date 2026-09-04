@@ -7,7 +7,7 @@
       "name": "editable-pixel",
       "source": "./",
       "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "author": { "name": "NariP" },
       "homepage": "https://github.com/NariP/editable-pixel#readme",
       "repository": "https://github.com/NariP/editable-pixel",

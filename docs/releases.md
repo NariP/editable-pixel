@@ -28,6 +28,15 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Compatibility policy
 
+### 1.0.3
+
+- Reduces the installed package from about 50 MB to about 19 MB, so `npm install -g` and the first `npx` run download and unpack less.
+- Replaces the sharp native image codec with the `@jsquash` WebAssembly codecs. PNG, JPEG, and WebP input and PNG output behave the same; installation no longer depends on a platform-specific native binary.
+- Loads the Pretendard webfont from a CDN instead of bundling it. Offline installations, or environments that block the CDN, fall back to the operating system UI font: text including Korean still renders, but the typeface differs.
+- Adds Claude Code and Codex plugin marketplace installation through `.claude-plugin/`, `.codex-plugin/`, and `.mcp.json`. The existing `npm i -g editable-pixel` plus `editable-pixel install-skill` path is unchanged.
+- Excludes source maps and README screenshots from the published archive.
+- Remains compatible with Pixel Document version `1`.
+
 ### 1.0.2
 
 - Adds Windows x64 npm installation support, including Codex/Claude `.cmd` launcher handling and CLI startup from Windows short (8.3) paths.
