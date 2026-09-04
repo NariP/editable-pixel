@@ -1,4 +1,5 @@
 import { NEUTRAL_NORMAL, createPixelDocument, type PixelDocument } from "@editable-pixel/document";
+import { encodePng } from "@editable-pixel/image-codec";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFile } from "node:child_process";
@@ -6,7 +7,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import sharp from "sharp";
+
+import { decodeGif } from "../support/gif.js";
 
 const daemonToken = "editable-pixel-e2e-daemon-token";
 test("CLI isometric controls update the visible grid and shared selection history", async ({ page, request }) => {
@@ -1083,8 +1085,11 @@ test("multiple images import in natural filename order and export matching GIF p
   initialPixels[18] = 2;
   const rgbaPalette = [[0, 0, 0, 0], [255, 122, 0, 255], [0, 223, 247, 255]];
   const rgba = (pixels: number[]) => Buffer.from(pixels.flatMap((index) => rgbaPalette[index]!));
-  const frame2 = await sharp(rgba(frame2Pixels), { raw: { width: 8, height: 6, channels: 4 } }).png().toBuffer();
-  const frame10 = await sharp(rgba(frame10Pixels), { raw: { width: 8, height: 6, channels: 4 } }).png().toBuffer();
+  const png = async (pixels: number[]) => Buffer.from(await encodePng({
+    data: new Uint8ClampedArray(rgba(pixels)), width: 8, height: 6
+  }));
+  const frame2 = await png(frame2Pixels);
+  const frame10 = await png(frame10Pixels);
   const expectedFrames = [initialPixels, frame2Pixels, frame10Pixels];
   const durations = [80, 140, 230];
 
@@ -1151,12 +1156,13 @@ test("multiple images import in natural filename order and export matching GIF p
   const downloadPath = await download.path();
   if (!downloadPath) throw new Error("GIF download did not produce a local file.");
   const gif = await readFile(downloadPath);
-  const metadata = await sharp(gif, { animated: true }).metadata();
-  expect(metadata).toMatchObject({ format: "gif", pages: 3, width: 8, pageHeight: 6, delay: durations });
-  const decoded = await sharp(gif, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  expect(decoded.info).toMatchObject({ width: 8, height: 18, channels: 4 });
+  const decoded = decodeGif(gif);
+  expect({ width: decoded.width, height: decoded.height, frames: decoded.frames.length }).toEqual({
+    width: 8, height: 6, frames: 3
+  });
+  expect(decoded.frames.map((frame) => frame.delayMs)).toEqual(durations);
   for (const [index, pixels] of expectedFrames.entries()) {
-    expect(decoded.data.subarray(index * 8 * 6 * 4, (index + 1) * 8 * 6 * 4)).toEqual(rgba(pixels));
+    expect(Buffer.from(decoded.frames[index]!.data), `frame ${index + 1}`).toEqual(rgba(pixels));
   }
 
   await page.reload();

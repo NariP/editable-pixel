@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { createPixelDocument, serializePixelDocument } from "@editable-pixel/document";
+import { decodePng } from "@editable-pixel/image-codec";
 import { renderRgba } from "@editable-pixel/renderer";
-import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
 const execFile = promisify(execFileCallback);
@@ -28,9 +28,9 @@ describe("CLI and web renderer integration", () => {
       await writeFile(input, serializePixelDocument(document));
 
       await execFile(process.execPath, [cli, "render", input, "--output", output]);
-      const decoded = await sharp(await readFile(output)).ensureAlpha().raw().toBuffer();
+      const decoded = await decodePng(await readFile(output));
 
-      expect([...decoded]).toEqual([...renderRgba(document).data]);
+      expect([...decoded.data]).toEqual([...renderRgba(document).data]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

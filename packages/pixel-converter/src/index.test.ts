@@ -1,15 +1,20 @@
+import { encodePng } from "@editable-pixel/image-codec";
 import { renderPng } from "@editable-pixel/renderer/node";
-import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
 import { convertBatch, convertImage } from "./index.js";
+import { encodeLosslessJpeg, encodeLosslessWebp } from "./test-fixtures.js";
 
 async function rgbaPng(
   width: number,
   height: number,
   pixels: Array<[number, number, number, number]>
 ): Promise<Buffer> {
-  return sharp(Buffer.from(pixels.flat()), { raw: { width, height, channels: 4 } }).png().toBuffer();
+  return rawPng(width, height, new Uint8ClampedArray(pixels.flat()));
+}
+
+async function rawPng(width: number, height: number, data: Uint8ClampedArray): Promise<Buffer> {
+  return Buffer.from(await encodePng({ data, width, height }));
 }
 
 async function rgbaImage(
@@ -18,10 +23,23 @@ async function rgbaImage(
   pixels: Array<[number, number, number, number]>,
   format: "png" | "webp" | "jpeg"
 ): Promise<Buffer> {
-  const image = sharp(Buffer.from(pixels.flat()), { raw: { width, height, channels: 4 } });
-  if (format === "webp") return image.webp({ lossless: true }).toBuffer();
-  if (format === "jpeg") return image.flatten({ background: "#ffffff" }).jpeg({ quality: 100, chromaSubsampling: "4:4:4" }).toBuffer();
-  return image.png().toBuffer();
+  const data = new Uint8ClampedArray(pixels.flat());
+  if (format === "webp") return encodeLosslessWebp({ data, width, height });
+  // JPEG has no alpha, so flatten onto white the way the old sharp fixture did.
+  if (format === "jpeg") return encodeLosslessJpeg({ data: flattenOnWhite(data), width, height });
+  return rawPng(width, height, data);
+}
+
+function flattenOnWhite(data: Uint8ClampedArray): Uint8ClampedArray {
+  const flattened = new Uint8ClampedArray(data.length);
+  for (let offset = 0; offset < data.length; offset += 4) {
+    const alpha = data[offset + 3]! / 255;
+    for (let channel = 0; channel < 3; channel += 1) {
+      flattened[offset + channel] = Math.round(data[offset + channel]! * alpha + 255 * (1 - alpha));
+    }
+    flattened[offset + 3] = 255;
+  }
+  return flattened;
 }
 
 describe("Pixel Converter", () => {
@@ -240,7 +258,7 @@ describe("Pixel Converter", () => {
       raw[offset] = 255;
       raw[offset + 3] = 255;
     }
-    const input = await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const input = await rawPng(width, height, new Uint8ClampedArray(raw));
     const result = await convertImage(input, {
       canvasWidth: 32,
       canvasHeight: 32,
