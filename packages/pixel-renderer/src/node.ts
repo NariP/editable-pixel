@@ -1,5 +1,5 @@
+import { compositeRgba, encodePng as encodeRgbaPng, resizeNearest } from "@editable-pixel/image-codec";
 import type { PixelDocument } from "@editable-pixel/document";
-import sharp from "sharp";
 
 import { renderLitRgba, renderNormalRgba, renderRgba, type LightSettings, type RenderOptions, type RenderedRgba } from "./index.js";
 
@@ -39,11 +39,12 @@ export async function renderLitPreviewPng(
 }
 
 async function encodePng(rendered: RenderedRgba, scale = 1): Promise<Buffer> {
-  let image = sharp(Buffer.from(rendered.data), {
-    raw: { width: rendered.width, height: rendered.height, channels: 4 }
-  });
-  if (scale > 1) image = image.resize(rendered.width * scale, rendered.height * scale, { kernel: "nearest" });
-  return image.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer();
+  // Previews only ever scale by an integer factor, where nearest sampling is
+  // exact pixel duplication — the pixel-art contract this renderer guarantees.
+  const image = scale > 1
+    ? resizeNearest(rendered, rendered.width * scale, rendered.height * scale)
+    : rendered;
+  return Buffer.from(await encodeRgbaPng(image));
 }
 
 export async function renderPreviewPng(
@@ -77,30 +78,25 @@ export async function renderSpriteSheet(document: PixelDocument): Promise<{
     frames: Array<{ id: string; x: number; y: number; width: number; height: number; durationMs: number }>;
   };
 }> {
-  const frameBuffers = await Promise.all(document.frames.map((frame) => renderPng(document, { frameId: frame.id })));
-  const png = await sharp({
-    create: {
-      width: document.canvas.width * document.frames.length,
-      height: document.canvas.height,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  })
-    .composite(
-      frameBuffers.map((input, index) => ({
-        input,
-        left: index * document.canvas.width,
-        top: 0
-      }))
-    )
-    .png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
-    .toBuffer();
+  const width = document.canvas.width * document.frames.length;
+  const height = document.canvas.height;
+  // Composite from RGBA directly instead of re-decoding per-frame PNGs; the
+  // frames tile edge to edge, so a straight copy matches the old blend.
+  const sheet = compositeRgba(
+    width,
+    height,
+    document.frames.map((frame, index) => ({
+      image: renderRgba(document, { frameId: frame.id }),
+      left: index * document.canvas.width,
+      top: 0
+    }))
+  );
 
   return {
-    png,
+    png: Buffer.from(await encodeRgbaPng(sheet)),
     metadata: {
-      width: document.canvas.width * document.frames.length,
-      height: document.canvas.height,
+      width,
+      height,
       frames: document.frames.map((frame, index) => ({
         id: frame.id,
         x: index * document.canvas.width,

@@ -6,7 +6,11 @@ import {
   type PixelDocument,
   type Rect
 } from "@editable-pixel/document";
-import sharp from "sharp";
+import {
+  blitRgba,
+  decodeImage as decodeRgbaImage,
+  resizeNearest
+} from "@editable-pixel/image-codec";
 
 export type ConverterInput = Buffer | Uint8Array;
 export type Dithering = "none" | "floyd-steinberg";
@@ -171,21 +175,21 @@ async function decodeImage(input: Buffer, options: ResolvedOptions): Promise<Dec
     }
     source = await options.backgroundRemover(input);
   }
-  const decoder = sharp(source);
-  const sourceMetadata = await decoder.metadata();
-  const decoded = await decoder.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const data = new Uint8ClampedArray(decoded.data);
+  // The decoder is picked from the container magic bytes and always yields
+  // 8-bit RGBA, so the old `.ensureAlpha()` is implicit.
+  const decoded = await decodeRgbaImage(source);
+  const data = decoded.data;
   if (options.background === "solid") removeSolidBackground(data, options);
   thresholdAlpha(data, options.alphaThreshold);
-  const bounds = alphaBounds(data, decoded.info.width, decoded.info.height);
+  const bounds = alphaBounds(data, decoded.width, decoded.height);
   return {
     data,
-    width: decoded.info.width,
-    height: decoded.info.height,
+    width: decoded.width,
+    height: decoded.height,
     original: {
-      width: decoded.info.width,
-      height: decoded.info.height,
-      ...(sourceMetadata.format ? { format: sourceMetadata.format } : {})
+      width: decoded.width,
+      height: decoded.height,
+      format: decoded.format
     },
     ...(bounds ? { bounds } : {})
   };
@@ -226,13 +230,16 @@ async function normalizeDecodedImage(
   if (groupBounds) {
     const target = containRect(groupBounds.width, groupBounds.height, options.contentBox, options.alignment);
     const groupCrop = cropToGroupBounds(image, placement, groupBounds);
-    const extracted = await sharp(Buffer.from(groupCrop), {
-      raw: { width: groupBounds.width, height: groupBounds.height, channels: 4 }
-    })
-      .resize(target.width, target.height, { kernel: "nearest", fit: "fill" })
-      .raw()
-      .toBuffer();
-    blitRgba(canvas, options.canvasWidth, new Uint8ClampedArray(extracted), target);
+    // Invariant: `thresholdAlpha` has already run in `decodeImage`, so alpha is
+    // binarised to 0 or 255 here. That is why nearest resampling without
+    // premultiplication matches what sharp produced — the two only diverge on
+    // semi-transparent pixels, which cannot reach this point.
+    const extracted = resizeNearest(
+      { data: groupCrop, width: groupBounds.width, height: groupBounds.height },
+      target.width,
+      target.height
+    );
+    blitRgba(canvas, options.canvasWidth, extracted.data, target);
   }
   return {
     data: canvas,
@@ -457,14 +464,6 @@ function containRect(
     width: targetWidth,
     height: targetHeight
   };
-}
-
-function blitRgba(target: Uint8ClampedArray, targetWidth: number, input: Uint8ClampedArray, rect: Rect): void {
-  for (let y = 0; y < rect.height; y += 1) {
-    const sourceStart = y * rect.width * 4;
-    const targetStart = ((rect.y + y) * targetWidth + rect.x) * 4;
-    target.set(input.subarray(sourceStart, sourceStart + rect.width * 4), targetStart);
-  }
 }
 
 function defaultContentBox(

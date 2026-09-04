@@ -13,14 +13,19 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
+  // @jsquash/* stay external: their wasm is resolved next to the codec glue at
+  // runtime, and tsup would neither bundle nor relocate the .wasm files.
   external: [
+    "@jsquash/jpeg/decode.js",
+    "@jsquash/png/decode.js",
+    "@jsquash/png/encode.js",
+    "@jsquash/webp/decode.js",
     "@modelcontextprotocol/server",
     "@modelcontextprotocol/server/stdio",
     "busboy",
     "commander",
     "cross-spawn",
     "open",
-    "sharp",
     "ws",
     "zod",
     "zod/v4"

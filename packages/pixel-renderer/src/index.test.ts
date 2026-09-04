@@ -1,7 +1,8 @@
+import { decodePng } from "@editable-pixel/image-codec";
 import { createPixelDocument } from "@editable-pixel/document";
-import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
+import { readGifMetadata } from "./gif-metadata.js";
 import { renderAnimationGif, renderLitRgba, renderNormalRgba, renderRgba } from "./index.js";
 import { renderLayerPng, renderPng, renderPreviewPng, renderSpriteSheet } from "./node.js";
 
@@ -92,20 +93,22 @@ describe("Pixel Renderer", () => {
 
     const first = await renderPng(document);
     const second = await renderPng(document);
-    const decoded = await sharp(first).raw().toBuffer({ resolveWithObject: true });
+    const decoded = await decodePng(first);
 
     expect(first.equals(second)).toBe(true);
-    expect(decoded.info.width).toBe(2);
-    expect(decoded.info.height).toBe(2);
+    expect(decoded.width).toBe(2);
+    expect(decoded.height).toBe(2);
   });
 
   it("enlarges previews with nearest-neighbor pixels", async () => {
     const document = createPixelDocument({ width: 2, height: 2, pixels: [0, 1, 1, 0] });
-    const preview = await renderPreviewPng(document, 4);
-    const metadata = await sharp(preview).metadata();
+    const preview = await decodePng(await renderPreviewPng(document, 4));
 
-    expect(metadata.width).toBe(8);
-    expect(metadata.height).toBe(8);
+    expect(preview.width).toBe(8);
+    expect(preview.height).toBe(8);
+    // Nearest-neighbour duplication: every 4x4 block repeats one source pixel.
+    expect([...preview.data.subarray(0, 4)]).toEqual([...preview.data.subarray(12, 16)]);
+    expect([...preview.data.subarray(16, 20)]).not.toEqual([...preview.data.subarray(0, 4)]);
   });
 
   it("exports a horizontal sprite sheet with matching metadata", async () => {
@@ -114,10 +117,10 @@ describe("Pixel Renderer", () => {
     document.layers[0]!.frames["frame-2"] = [1, 0, 0, 1];
 
     const sheet = await renderSpriteSheet(document);
-    const metadata = await sharp(sheet.png).metadata();
+    const decoded = await decodePng(sheet.png);
 
-    expect(metadata.width).toBe(4);
-    expect(metadata.height).toBe(2);
+    expect(decoded.width).toBe(4);
+    expect(decoded.height).toBe(2);
     expect(sheet.metadata.frames[1]).toMatchObject({ id: "frame-2", x: 2, durationMs: 120 });
   });
 
@@ -128,13 +131,13 @@ describe("Pixel Renderer", () => {
     document.layers[0]!.frames["frame-2"] = [0, 1];
 
     const gif = renderAnimationGif(document, { scale: 3 });
-    const metadata = await sharp(gif, { animated: true }).metadata();
+    const metadata = readGifMetadata(gif);
 
     expect([...gif.slice(0, 6)]).toEqual([...new TextEncoder().encode("GIF89a")]);
     expect(metadata.width).toBe(6);
-    expect(metadata.pageHeight).toBe(3);
-    expect(metadata.pages).toBe(2);
-    expect(metadata.delay).toEqual([80, 140]);
+    expect(metadata.height).toBe(3);
+    expect(metadata.frames).toBe(2);
+    expect(metadata.delays).toEqual([80, 140]);
   });
 
   it("renders requested frames and isolated layers", async () => {
@@ -152,10 +155,10 @@ describe("Pixel Renderer", () => {
       frames: { "frame-1": [2], "frame-2": [0] }
     });
 
-    const frame = await sharp(await renderPng(document, { frameId: "frame-2" })).raw().toBuffer();
-    const layer = await sharp(await renderLayerPng(document, "artwork", "frame-1")).raw().toBuffer();
+    const frame = await decodePng(await renderPng(document, { frameId: "frame-2" }));
+    const layer = await decodePng(await renderLayerPng(document, "artwork", "frame-1"));
 
-    expect([...frame]).toEqual([0, 0, 255, 255]);
-    expect([...layer]).toEqual([255, 0, 0, 255]);
+    expect([...frame.data]).toEqual([0, 0, 255, 255]);
+    expect([...layer.data]).toEqual([255, 0, 0, 255]);
   });
 });

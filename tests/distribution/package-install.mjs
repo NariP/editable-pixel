@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import sharp from "sharp";
+import { decodePng, encodePng } from "@editable-pixel/image-codec";
 import { execFile } from "./process.mjs";
 import { verifyHostRegistration } from "./host-registration.mjs";
 
@@ -37,12 +37,6 @@ try {
     "package/web/index.html",
     "package/skills/editable-pixel/SKILL.md",
     "package/skills/editable-pixel/references/live-editing.md",
-    "package/docs/media/editor-overview.png",
-    "package/docs/media/robot-motion-64.gif",
-    "package/docs/media/before-after-palette.png",
-    "package/docs/media/before-after-ground.png",
-    "package/docs/media/before-after-lighting.png",
-    "package/docs/media/editor-palette-ai.png",
     "package/skills/editable-pixel/references/cli.md",
     "package/docs/project-model.md",
     "package/docs/mcp.md",
@@ -52,6 +46,15 @@ try {
     "package/LICENSE"
   ]) {
     if (!listing.includes(required)) throw new Error(`Package is missing ${required}.`);
+  }
+  // Slimming guards: README screenshots, build sourcemaps, and bundled webfonts
+  // are development-only weight and must never reach the published archive.
+  for (const [pattern, reason] of [
+    [/^package\/docs\/media\//m, "README media"],
+    [/\.js\.map$/m, "build sourcemaps"],
+    [/\.woff2?$/m, "bundled webfonts"]
+  ]) {
+    if (pattern.test(listing)) throw new Error(`Package must not ship ${reason}.`);
   }
   const checksum = createHash("sha256").update(await readFile(archive)).digest("hex");
 
@@ -73,6 +76,20 @@ try {
   const packageManifest = JSON.parse(await readFile(resolve("packages/pixel-cli/package.json"), "utf8"));
   if (version !== packageManifest.version) throw new Error(`Unexpected installed version: ${version}`);
   const packageRoot = windows ? join(prefix, "node_modules", "editable-pixel") : join(prefix, "lib", "node_modules", "editable-pixel");
+  // The image codecs are WebAssembly, and `.wasm` is not something a bundler
+  // inlines. If npm did not install @jsquash beside the package, convert and
+  // render would fail only in the published build — so assert it here.
+  const installRoot = windows ? join(prefix, "node_modules") : join(prefix, "lib", "node_modules");
+  for (const wasm of [
+    join("@jsquash", "png", "codec", "pkg", "squoosh_png_bg.wasm"),
+    join("@jsquash", "jpeg", "codec", "dec", "mozjpeg_dec.wasm"),
+    join("@jsquash", "webp", "codec", "dec", "webp_dec.wasm")
+  ]) {
+    await access(join(installRoot, wasm)).catch(() => access(join(packageRoot, "node_modules", wasm)));
+  }
+  // sharp's prebuilt binaries were the single largest chunk of the install.
+  await assert.rejects(access(join(installRoot, "sharp")), { code: "ENOENT" }, "sharp came back into the install.");
+  await assert.rejects(access(join(installRoot, "@img")), { code: "ENOENT" }, "@img prebuilds came back into the install.");
   await verifyHostRegistration({ cli, entrypoint: join(packageRoot, "dist", "mcp.js"), temporary, environment });
   const skillRoot = join(temporary, "skills");
   const installedSkill = JSON.parse((await execFile(
@@ -86,15 +103,17 @@ try {
   const inputImage = join(temporary, "입력 image & frame.png");
   const convertedFile = join(temporary, "converted.pixel.json");
   const outputImage = join(temporary, "exported.png");
-  await sharp({ create: { width: 16, height: 16, channels: 4, background: "#f08020" } }).png().toFile(inputImage);
+  const solid = new Uint8ClampedArray(16 * 16 * 4);
+  for (let offset = 0; offset < solid.length; offset += 4) solid.set([0xf0, 0x80, 0x20, 0xff], offset);
+  await writeFile(inputImage, await encodePng({ data: solid, width: 16, height: 16 }));
   await execFile(cli, ["convert", inputImage, "--size", "64", "--output", convertedFile], { env: environment });
   await execFile(cli, ["validate", convertedFile], { env: environment });
   const converted = JSON.parse(await readFile(convertedFile, "utf8"));
   assert.deepEqual(converted.canvas, { width: 64, height: 64 });
   await execFile(cli, ["render", convertedFile, "--scale", "2", "--output", outputImage], { env: environment });
-  const exported = await sharp(outputImage).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  assert.equal(exported.info.width, 128);
-  assert.equal(exported.info.height, 128);
+  const exported = await decodePng(await readFile(outputImage));
+  assert.equal(exported.width, 128);
+  assert.equal(exported.height, 128);
   const center = (64 * 128 + 64) * 4;
   assert.deepEqual([...exported.data.subarray(center, center + 4)], [240, 128, 32, 255]);
   const [openedOutput, concurrentOutput] = await Promise.all([

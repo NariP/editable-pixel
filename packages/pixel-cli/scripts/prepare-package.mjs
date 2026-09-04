@@ -1,5 +1,5 @@
 import { access, cp, mkdir, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,6 +20,23 @@ if (process.argv.includes("--clean")) {
   process.exit(0);
 }
 
+const excludedDocumentationDirectories = [join("docs", "test-assets"), join("docs", "media")];
+
+/**
+ * Excluded from the published package: test-assets are fixtures, media are
+ * README screenshots that npm rewrites to GitHub raw URLs anyway.
+ *
+ * Matched on the repository-relative path rather than as a substring of the
+ * absolute one, so a checkout living under a path that itself contains
+ * `docs/media` does not drop every file.
+ */
+function isPublishedDocumentation(source) {
+  const path = relative(repositoryRoot, source);
+  return !excludedDocumentationDirectories.some(
+    (directory) => path === directory || path.startsWith(directory + sep)
+  );
+}
+
 const webDist = join(repositoryRoot, "apps/web/dist");
 await access(join(webDist, "index.html"));
 await mkdir(packageRoot, { recursive: true });
@@ -31,9 +48,7 @@ await cp(join(repositoryRoot, "LICENSE"), join(packageRoot, "LICENSE"));
 await cp(join(repositoryRoot, "install.sh"), join(packageRoot, "install.sh"));
 await cp(join(repositoryRoot, "docs"), join(packageRoot, "docs"), {
   recursive: true,
-  filter(source) {
-    return !source.includes(`${join("docs", "test-assets")}`);
-  },
+  filter: isPublishedDocumentation,
   force: true
 });
 await cp(join(repositoryRoot, "skills", "editable-pixel"), join(packageRoot, "skills", "editable-pixel"), {
