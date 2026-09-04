@@ -11,10 +11,10 @@
     "@editable-pixel/converter": "workspace:*",
     "@editable-pixel/core": "workspace:*",
     "@editable-pixel/document": "workspace:*",
+    "@editable-pixel/image-codec": "workspace:*",
     "@editable-pixel/mcp": "workspace:*",
     "@editable-pixel/renderer": "workspace:*",
-    "@editable-pixel/server": "workspace:*",
-    "sharp": "0.35.3"
+    "@editable-pixel/server": "workspace:*"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",

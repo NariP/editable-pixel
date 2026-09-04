@@ -3,7 +3,8 @@
 :root {
   color: #ebe8dc;
   background: #11130f;
-  font-family: "Pretendard Variable", Pretendard, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+    "Apple SD Gothic Neo", "Segoe UI", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
   font-synthesis: none;
   --ink: #11130f;
   --panel: #1a1d18;
