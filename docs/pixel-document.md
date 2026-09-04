@@ -89,6 +89,6 @@ The parser migrates legacy version 0 documents with top-level `width`, `height`,
 
 A pixel patch identifies the document, base revision, layer, frame, before/after indices, affected bounds, selection, outside-selection hash, reason, creation time, and patch ID. Previewing does not mutate the document. Applying requires the current revision and before-values to match, validates the selection boundary and outside hash, then increments `revision`.
 
-Undo and redo use the same patch representation. There is no automatic merge for stale patches. Project revision and persistence are a separate outer boundary documented in the [Project model](../.claude/docs/project-model.md).
+Undo and redo use the same patch representation. There is no automatic merge for stale patches. Project revision and persistence are a separate outer boundary documented in the [Project model](./project-model.md).
 
 The runtime schema and semantic validation live in `packages/pixel-document`; all other packages consume that implementation.
