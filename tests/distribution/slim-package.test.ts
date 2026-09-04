@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -52,7 +52,10 @@ describe("published package stays slim", () => {
     // The filter must compare repository-relative paths. A substring test on the
     // absolute path would exclude everything when the checkout itself lives
     // under a directory named `docs/media`.
-    expect(prepareScript).toContain("relative(repositoryRoot, source)");
+    expect(prepareScript).toContain("relative(repositoryRoot, canonical(source))");
+    // Both sides of that comparison must be canonicalized, or two spellings of
+    // one directory make `relative()` escape the root and the guard passes.
+    expect(prepareScript).toContain("realpathSync.native");
 
     const excluded = [join("docs", "test-assets"), join("docs", "media")];
     // Mirrors `isPublishedDocumentation` in prepare-package.mjs.
@@ -69,6 +72,51 @@ describe("published package stays slim", () => {
     for (const checkout of ["/home/ci/editable-pixel", "/home/ci/docs/media/editable-pixel"]) {
       for (const source of filtered) expect(isCopied(checkout, source), `${checkout} ${source}`).toBe(false);
       for (const source of kept) expect(isCopied(checkout, source), `${checkout} ${source}`).toBe(true);
+    }
+  });
+
+  /**
+   * Regression: Windows can spell one directory two ways — an 8.3 short name
+   * (`RUNNER~1`), a junction, or a `subst` drive. `repositoryRoot` comes from
+   * `import.meta.url`, which the ESM loader resolves through the real path,
+   * while the directories handed to `fs.cp` are plain strings. When the two
+   * spellings disagree, `relative()` returns a `../..`-escaping path, no
+   * excluded prefix matches, and `docs/media` is published — which is exactly
+   * how the media guard in package-install.mjs tripped on CI.
+   *
+   * Pinned with `path.win32` so the semantics are asserted on every platform
+   * rather than only on a Windows runner.
+   */
+  it("refuses documentation whose path escapes the repository root", () => {
+    const excluded = [win32.join("docs", "test-assets"), win32.join("docs", "media")];
+
+    // The hardened rule from prepare-package.mjs: canonical comparison plus an
+    // explicit refusal for anything that still resolves outside the root.
+    const isCopied = (repositoryRoot: string, source: string): boolean => {
+      const path = win32.relative(repositoryRoot, source);
+      if (path.startsWith("..") || path === "") return false;
+      return !excluded.some((directory) => path === directory || path.startsWith(directory + win32.sep));
+    };
+
+    const shortRoot = String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\ep`;
+    const longRoot = String.raw`C:\Users\runneradmin\AppData\Local\Temp\ep`;
+
+    // Mixed spellings: `relative()` escapes the root, so the guard must refuse.
+    expect(isCopied(shortRoot, win32.join(longRoot, "docs", "media", "editor.png"))).toBe(false);
+    expect(isCopied(longRoot, win32.join(shortRoot, "docs", "media", "editor.png"))).toBe(false);
+    // Refusing on escape must not silently drop real docs either — those are
+    // only reachable once both sides agree, which canonicalization guarantees.
+    expect(isCopied(shortRoot, win32.join(longRoot, "docs", "cli.md"))).toBe(false);
+
+    // Matching spellings: the ordinary rules still apply on Windows separators.
+    for (const root of [shortRoot, longRoot]) {
+      expect(isCopied(root, win32.join(root, "docs", "media"))).toBe(false);
+      expect(isCopied(root, win32.join(root, "docs", "media", "editor.png"))).toBe(false);
+      expect(isCopied(root, win32.join(root, "docs", "test-assets", "sample.png"))).toBe(false);
+      expect(isCopied(root, win32.join(root, "docs", "cli.md"))).toBe(true);
+      expect(isCopied(root, win32.join(root, "docs"))).toBe(true);
+      // `media` outside docs/ stays publishable.
+      expect(isCopied(root, win32.join(root, "docs", "guides", "media", "a.md"))).toBe(true);
     }
   });
 

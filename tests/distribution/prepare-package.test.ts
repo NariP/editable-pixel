@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { access, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,12 @@ const exists = async (...segments: string[]): Promise<boolean> =>
   access(join(packageRoot, ...segments)).then(() => true, () => false);
 
 beforeEach(async () => {
-  checkout = await mkdtemp(join(tmpdir(), "editable-pixel-prepare-"));
+  // `os.tmpdir()` can hand back a non-canonical spelling of the directory —
+  // `/var` for `/private/var` on macOS, an 8.3 short name (`RUNNER~1`) on
+  // Windows. The script canonicalizes the roots it derives from
+  // `import.meta.url`, so the fixture has to be canonical too or the paths this
+  // test asserts on name a different spelling than the ones the build wrote.
+  checkout = realpathSync.native(await mkdtemp(join(tmpdir(), "editable-pixel-prepare-")));
   packageRoot = join(checkout, "packages", "pixel-cli");
 
   await mkdir(join(packageRoot, "scripts"), { recursive: true });
