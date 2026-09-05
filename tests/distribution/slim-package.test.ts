@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
-import { join, relative, sep, win32 } from "node:path";
+import { join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+
+// The real filter, imported rather than mirrored. prepare-package.mjs copies at
+// module scope, so its side-effect-free half lives in its own module precisely
+// so this suite can call the shipped rule instead of a look-alike that drifts.
+import {
+  excludedDocumentationDirectories,
+  isPublishedDocumentation
+} from "../../packages/pixel-cli/scripts/published-documentation.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -47,32 +55,54 @@ describe("published package stays slim", () => {
 
   it("excludes docs/media from the archive while keeping the offline markdown docs", () => {
     expect(manifest.files).toContain("docs");
-    expect(prepareScript).toContain('join("docs", "media")');
-    expect(prepareScript).toContain('join("docs", "test-assets")');
-    // The filter must compare repository-relative paths. A substring test on the
-    // absolute path would exclude everything when the checkout itself lives
-    // under a directory named `docs/media`.
-    expect(prepareScript).toContain("relative(repositoryRoot, canonical(source))");
-    // Both sides of that comparison must be canonicalized, or two spellings of
-    // one directory make `relative()` escape the root and the guard passes.
-    expect(prepareScript).toContain("realpathSync.native");
-
-    const excluded = [join("docs", "test-assets"), join("docs", "media")];
-    // Mirrors `isPublishedDocumentation` in prepare-package.mjs.
-    const isCopied = (checkout: string, relativePath: string): boolean => {
-      const source = join(checkout, relativePath);
-      const path = relative(checkout, source);
-      return !excluded.some((directory) => path === directory || path.startsWith(directory + sep));
-    };
+    // The exclusion list is the shipped one, so a rename here is a test failure
+    // rather than a silent divergence between script and guard.
+    expect(excludedDocumentationDirectories).toEqual([
+      join("docs", "test-assets"),
+      join("docs", "media")
+    ]);
+    expect(prepareScript).toContain("isPublishedDocumentation");
 
     const filtered = ["docs/media/editor-overview.png", "docs/test-assets/sample.png"];
     const kept = ["docs/mcp.md", "docs/project-model.md", "docs/getting-started.md"];
 
-    // Both a normal checkout and one whose own path contains the excluded names.
-    for (const checkout of ["/home/ci/editable-pixel", "/home/ci/docs/media/editable-pixel"]) {
-      for (const source of filtered) expect(isCopied(checkout, source), `${checkout} ${source}`).toBe(false);
-      for (const source of kept) expect(isCopied(checkout, source), `${checkout} ${source}`).toBe(true);
+    // Real directories, because the filter canonicalizes `source` and a path
+    // that does not exist on disk would fall back to `resolve()`. The repository
+    // root itself is the natural fixture: it holds both excluded directories.
+    for (const source of filtered) {
+      expect(isPublishedDocumentation(repositoryRoot, join(repositoryRoot, source)), source).toBe(false);
     }
+    for (const source of kept) {
+      expect(isPublishedDocumentation(repositoryRoot, join(repositoryRoot, source)), source).toBe(true);
+    }
+
+    // The exclusions are path prefixes, not substrings. A sibling whose name
+    // merely starts with an excluded one, or a `media` directory nested deeper
+    // under docs/, is ordinary documentation and must still be published — a
+    // substring test would drop all of it. These paths need not exist:
+    // `canonical()` falls back to `resolve()`, which keeps the spelling.
+    const publishable = [
+      "docs/media-kit/logo-usage.md",
+      "docs/mediaeval.md",
+      "docs/test-assets-guide.md",
+      "docs/guides/media/a.md"
+    ];
+    for (const source of publishable) {
+      expect(isPublishedDocumentation(repositoryRoot, join(repositoryRoot, source)), source).toBe(true);
+    }
+    // The excluded directories themselves are refused, not just their contents.
+    for (const source of ["docs/media", "docs/test-assets"]) {
+      expect(isPublishedDocumentation(repositoryRoot, join(repositoryRoot, source)), source).toBe(false);
+    }
+
+    // The rule matches a repository-relative path, not a substring of the
+    // absolute one: a checkout whose own path contains `docs/media` must still
+    // publish its docs. `packages/pixel-cli` stands in for such a root.
+    const nestedRoot = join(repositoryRoot, "packages", "pixel-cli");
+    expect(isPublishedDocumentation(nestedRoot, join(repositoryRoot, "docs", "mcp.md"))).toBe(false);
+    expect(isPublishedDocumentation(repositoryRoot, join(repositoryRoot, "docs"))).toBe(true);
+    // The root itself is not documentation to copy.
+    expect(isPublishedDocumentation(repositoryRoot, repositoryRoot)).toBe(false);
   });
 
   /**
@@ -90,8 +120,10 @@ describe("published package stays slim", () => {
   it("refuses documentation whose path escapes the repository root", () => {
     const excluded = [win32.join("docs", "test-assets"), win32.join("docs", "media")];
 
-    // The hardened rule from prepare-package.mjs: canonical comparison plus an
-    // explicit refusal for anything that still resolves outside the root.
+    // The shipped rule restated on `path.win32`. `isPublishedDocumentation`
+    // canonicalizes through the host filesystem, so Windows spellings cannot be
+    // fed to it from a POSIX runner; the semantics under test are the
+    // comparison that follows canonicalization, which is what is pinned here.
     const isCopied = (repositoryRoot: string, source: string): boolean => {
       const path = win32.relative(repositoryRoot, source);
       if (path.startsWith("..") || path === "") return false;

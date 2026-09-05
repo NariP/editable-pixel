@@ -36,10 +36,14 @@ beforeEach(async () => {
   packageRoot = join(checkout, "packages", "pixel-cli");
 
   await mkdir(join(packageRoot, "scripts"), { recursive: true });
-  await cp(
-    join(repositoryRoot, "packages/pixel-cli/scripts/prepare-package.mjs"),
-    join(packageRoot, "scripts", "prepare-package.mjs")
-  );
+  // The entrypoint imports its copy filter from a sibling module, so both have
+  // to land in the fixture for the script to resolve.
+  for (const script of ["prepare-package.mjs", "published-documentation.mjs"]) {
+    await cp(
+      join(repositoryRoot, "packages/pixel-cli/scripts", script),
+      join(packageRoot, "scripts", script)
+    );
+  }
 
   await mkdir(join(checkout, "apps", "web", "dist", "assets"), { recursive: true });
   await writeFile(join(checkout, "apps/web/dist/index.html"), "<div id=\"root\"></div>");
