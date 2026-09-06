@@ -36,6 +36,8 @@ import { Command, CommanderError, Option } from "commander";
 import crossSpawn from "cross-spawn";
 import open from "open";
 
+import { packageVersion } from "./version.js";
+
 interface CliContext {
   write: (text: string) => void;
   writeError: (text: string) => void;
@@ -52,7 +54,7 @@ export function createProgram(context: CliContext = defaultContext): Command {
   const program = new Command()
     .name("editable-pixel")
     .description("Convert and edit AI-generated pixel assets as deterministic Pixel Documents.")
-    .version("1.0.3")
+    .version(packageVersion)
     .option("--json", "print stable machine-readable JSON")
     .configureOutput({
       writeOut: (text) => context.write(text.trimEnd()),
