@@ -21,6 +21,28 @@ const withoutComments = (source: string): string =>
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
 
+/**
+ * Splits a workflow into its `- `-bulleted steps, in order.
+ *
+ * Ordering assertions need a step *boundary*, which raw string offsets cannot
+ * give: a regex for "the `uses:` line plus the inputs under it" has no way to
+ * stop at the end of a step, because the next step's lines are indented as well.
+ * That silently matched across two steps and identified the wrong one.
+ *
+ * A YAML parser would be the rigorous answer, but the assertions here are
+ * deliberately textual (they also check comment-stripped content and exact
+ * command spelling), so splitting on the bullet keeps one representation.
+ */
+const splitSteps = (source: string): string[] => {
+  const stepBullet = /^\s*- /;
+
+  return source.split("\n").reduce<string[]>((steps, line) => {
+    if (stepBullet.test(line)) return [...steps, line];
+    if (steps.length > 0) steps[steps.length - 1] += `\n${line}`;
+    return steps;
+  }, []);
+};
+
 const enginesNodeAt = (relativePath: string): string => {
   const { engines } = readManifest(relativePath) as { engines?: { node?: string } };
   const declared = engines?.node;
@@ -50,6 +72,33 @@ const enginesNodeAt = (relativePath: string): string => {
  * floor), not identical.
  */
 const canonicalManifest = "packages/pixel-cli/package.json";
+
+/**
+ * Faults in a `.nvmrc`'s *content*, deliberately blind to line-ending style.
+ *
+ * Exported shape matters: the failure this guards against is only reachable on
+ * Windows, where git's default `core.autocrlf=true` checks the file out as
+ * "24\r\n". An earlier version of this test asserted the file equalled
+ * `` `${trimmed}\n` ``, which encoded LF as the requirement and failed the
+ * Windows CI job on a file that was perfectly valid. `.gitattributes` now pins
+ * LF at checkout, but a local editor can still write CRLF, and a guard that
+ * fails on a working file is worse than no guard.
+ *
+ * What actually matters to `nvm`/`actions/setup-node` is the essence: one
+ * version line, no surrounding or trailing whitespace, nothing after it. That is
+ * what this checks — CRLF passes, a stray trailing space or a second line does
+ * not.
+ */
+export const nvmrcContentFault = (raw: string): string | undefined => {
+  const withoutEol = raw.replace(/\r?\n$/, "");
+
+  if (/\r?\n/.test(withoutEol)) return "must contain exactly one line";
+  if (!raw.endsWith("\n")) return "must end with a newline";
+  if (withoutEol !== withoutEol.trim()) return "must not pad the version with whitespace";
+  if (!/^\d+$/.test(withoutEol)) return `must be a bare major version, got "${withoutEol}"`;
+
+  return undefined;
+};
 
 const majorOf = (version: string): number => {
   const major = Number(version.split(".")[0]);
@@ -90,9 +139,11 @@ describe("runtime version single source", () => {
     // A bare major (no patch pin) is the deliberate choice: setup-node and nvm
     // both resolve it to the newest 24.x, so security patches land without a PR
     // per release. Reproducibility is anchored by pnpm-lock.yaml instead.
-    expect(nvmrc.trimEnd(), ".nvmrc").toMatch(/^\d+$/);
-    // Trailing newline, no leading whitespace: nvm reads the file verbatim.
-    expect(nvmrc, ".nvmrc must end with exactly one newline").toBe(`${nvmrc.trim()}\n`);
+    //
+    // Line-ending style is intentionally *not* part of the requirement — see
+    // nvmrcContentFault. `.gitattributes` pins LF at checkout; this assertion
+    // covers what nvm actually parses.
+    expect(nvmrcContentFault(nvmrc), ".nvmrc").toBeUndefined();
 
     const tested = majorOf(nvmrc.trim());
     const floor = floorMajor(enginesNodeAt(canonicalManifest));
@@ -101,6 +152,27 @@ describe("runtime version single source", () => {
     // Testing below the floor would leave the supported range unexercised.
     expect(tested, `.nvmrc (${tested}) is below the engines floor (${floor})`)
       .toBeGreaterThanOrEqual(floor);
+  });
+
+  // The CRLF half of the check above cannot be reached from a macOS/Linux
+  // checkout — `.gitattributes` guarantees the file on disk is LF here, which is
+  // precisely why the Windows-only break got through review the first time. The
+  // CRLF input is therefore constructed rather than read, so the tolerance is
+  // pinned on every platform.
+  it.each([
+    ["LF", "24\n", undefined],
+    ["CRLF", "24\r\n", undefined],
+    // Essence preserved: these must still fail regardless of line-ending style.
+    ["no trailing newline", "24", "must end with a newline"],
+    ["trailing space (LF)", "24 \n", "must not pad the version with whitespace"],
+    ["trailing space (CRLF)", "24 \r\n", "must not pad the version with whitespace"],
+    ["leading space (CRLF)", " 24\r\n", "must not pad the version with whitespace"],
+    ["two lines (LF)", "24\n22\n", "must contain exactly one line"],
+    ["two lines (CRLF)", "24\r\n22\r\n", "must contain exactly one line"],
+    ["blank second line", "24\n\n", "must contain exactly one line"],
+    ["not a bare major", "v24.1.0\r\n", 'must be a bare major version, got "v24.1.0"']
+  ])("judges a .nvmrc that is %s on content, not line-ending style", (_label, raw, expected) => {
+    expect(nvmrcContentFault(raw as string)).toBe(expected);
   });
 
   it.each([".github/workflows/ci.yml", ".github/workflows/release.yml"])(
@@ -135,13 +207,65 @@ describe("runtime version single source", () => {
       // source of truth this removes.
       expect(source.includes("pnpm/action-setup"), `${workflow}: still pins pnpm separately`).toBe(false);
 
-      // Corepack must be on PATH before setup-node, whose `cache: pnpm` shells
-      // out to `pnpm store path`. Reversing these silently breaks the cache.
-      const corepackAt = source.indexOf("corepack enable pnpm");
-      const setupNodeAt = source.indexOf("actions/setup-node");
-      expect(setupNodeAt, `${workflow}: no setup-node step`).toBeGreaterThan(-1);
-      expect(corepackAt, `${workflow}: corepack must be enabled before setup-node`)
-        .toBeLessThan(setupNodeAt);
+      // Ordering is a three-way constraint, and each leg fails differently:
+      //
+      //   setup-node (no cache)  →  corepack enable pnpm  →  setup-node (cache)
+      //
+      //  * Corepack after the first setup-node, because Corepack binds its shims
+      //    to whatever node is active. On Windows the resulting `pnpm.cmd` is
+      //    early-bound, so enabling first pinned the build to the runner's
+      //    preinstalled Node 22 while `.nvmrc` asked for 24 — a wrong-runtime
+      //    build that only warned, rather than an error. (actions/setup-node#531)
+      //  * Corepack before the caching setup-node, because `cache: pnpm` shells
+      //    out to `pnpm store path`; without pnpm on PATH the cache silently
+      //    stops working and CI just gets slower.
+      //
+      // Compared step-by-step rather than by raw string offsets. The caching
+      // step has to be identified by its `cache: pnpm` *input*, and an offset
+      // regex spanning "the uses: line plus its following inputs" cannot express
+      // where a step ends — every subsequent line is indented too, so it bridges
+      // into the next step and reports the wrong one. Splitting on the step
+      // bullet gives the boundary for free.
+      const steps = splitSteps(source);
+      expect(steps.length, `${workflow}: no \`- \` steps parsed`).toBeGreaterThan(0);
+
+      const setupNodeAt = steps.flatMap((step, index) =>
+        /uses:\s*actions\/setup-node@/.test(step) ? [index] : []
+      );
+      expect(setupNodeAt.length, `${workflow}: expected two setup-node steps`).toBe(2);
+
+      const cacheAt = steps.flatMap((step, index) =>
+        /uses:\s*actions\/setup-node@/.test(step) && /^\s*cache:\s*pnpm\s*$/m.test(step)
+          ? [index]
+          : []
+      );
+      expect(cacheAt, `${workflow}: expected exactly one setup-node with \`cache: pnpm\``)
+        .toHaveLength(1);
+
+      const corepackAt = steps.findIndex((step) => step.includes("corepack enable pnpm"));
+      expect(corepackAt, `${workflow}: no \`corepack enable pnpm\` step`).toBeGreaterThan(-1);
+
+      // Corepack sits strictly between the two setup-node steps.
+      const [installStep, cacheStep] = [Math.min(...setupNodeAt), cacheAt[0] as number];
+
+      expect(
+        installStep,
+        `${workflow}: a setup-node must install Node before Corepack, or the shims ` +
+          `bind to the runner's default Node (Windows .cmd shims are early-bound)`
+      ).toBeLessThan(corepackAt);
+      expect(
+        corepackAt,
+        `${workflow}: corepack must run before the \`cache: pnpm\` setup-node, whose ` +
+          `cache lookup runs \`pnpm store path\``
+      ).toBeLessThan(cacheStep);
+
+      // The Node-installing step must not itself be the caching one — that is
+      // the single-setup-node arrangement this splits apart, and collapsing back
+      // to it would reintroduce the chicken/egg.
+      expect(
+        installStep,
+        `${workflow}: the pre-Corepack setup-node must not declare \`cache: pnpm\``
+      ).not.toBe(cacheStep);
     }
   );
 
