@@ -10,9 +10,9 @@ Change a character's color scheme without redrawing it. Align animation frames. 
 
 ## Demo video
 
-https://github.com/user-attachments/assets/cd54beff-7445-4f5a-83be-fcb16d0de2c9
+https://github.com/user-attachments/assets/1a9dbaf5-5355-44cd-83bc-d45bdb9265aa
 
-40 seconds of full-palette recoloring, frame alignment, and a Lit PNG showcase. Korean captions with music; play the video above directly on GitHub.
+30 seconds of full-palette recoloring, frame alignment, precision editing, and material lighting. Korean captions with music.
 
 ## Before and after
 

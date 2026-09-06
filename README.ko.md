@@ -12,9 +12,9 @@ AI로 이미지 에셋을 만드는 사람을 위한 로컬 픽셀 편집기입�
 
 ## 데모 영상
 
-https://github.com/user-attachments/assets/cd54beff-7445-4f5a-83be-fcb16d0de2c9
+https://github.com/user-attachments/assets/1a9dbaf5-5355-44cd-83bc-d45bdb9265aa
 
-팔레트 전체 교체, 프레임 위치 정렬, Lit PNG 출력 예시를 담은 40초 영상입니다. 한국어 자막과 BGM이 있으며, GitHub에서 위 플레이어로 바로 재생할 수 있습니다.
+팔레트 전체 교체, 프레임 위치 정렬, 정밀 편집, 머티리얼 조명 예시를 담은 30초 영상입니다. 한국어 자막과 BGM이 있습니다.
 
 <a id="before-and-after"></a>
 
