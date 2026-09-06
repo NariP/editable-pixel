@@ -7,13 +7,15 @@ Editable Pixel stores complete work in a Pixel Project and uses Pixel Document J
 The npm package is not published yet. For the current pre-release, build from this repository:
 
 ```bash
-corepack enable
+corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
 node packages/pixel-cli/dist/cli.js --help
 ```
 
-Node.js 20.9 or newer is required.
+Corepack is scoped to `pnpm`: bare `corepack enable` also shims `npm`, and that shim refuses to run inside a repository whose `packageManager` is pnpm.
+
+Node.js 24 or newer is required. The repository pins the development runtime in `.nvmrc`; with nvm installed, `nvm use` picks it up.
 
 In the examples below, replace `editable-pixel` with `node packages/pixel-cli/dist/cli.js` when running from source. The [README](../README.md#run-locally) also documents the prepared npm and install-script workflows for after publication.
 

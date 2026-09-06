@@ -45,7 +45,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      placeholder: macOS 15, Node 20.19, Codex or Claude version
+      placeholder: macOS 15, Node 24.20, Codex or Claude version
     validations:
       required: true
   - type: checkboxes

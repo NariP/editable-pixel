@@ -68,7 +68,7 @@ Frame 1은 160ms, Frame 4는 100ms로 설정해줘.
 
 ## 로컬 실행
 
-**Node.js 20.9 이상**이 필요합니다. 별도 웹 서비스에 접속하는 방식이 아니라 내 컴퓨터에서 편집기를 실행합니다.
+**Node.js 24 이상**이 필요합니다. 별도 웹 서비스에 접속하는 방식이 아니라 내 컴퓨터에서 편집기를 실행합니다.
 
 ```bash
 npm install --global editable-pixel
@@ -82,10 +82,12 @@ npm 설치 폴더에는 `&`를 사용하지 마세요. npm이 생성하는 Windo
 <details>
 <summary>소스에서 빌드하기 (pnpm 10.29.3 필요)</summary>
 
+Corepack은 `pnpm`으로 범위를 좁혀 활성화합니다. 인자 없는 `corepack enable`은 `npm` 심까지 설치하는데, 이 심은 `packageManager`가 pnpm인 저장소 안에서 실행을 거부합니다.
+
 ```bash
 git clone https://github.com/NariP/editable-pixel.git
 cd editable-pixel
-corepack enable
+corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
 node packages/pixel-cli/dist/cli.js open

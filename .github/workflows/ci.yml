@@ -18,13 +18,52 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+
+      # WORKAROUND: https://github.com/actions/setup-node/issues/531
+      #
+      # setup-node runs twice on purpose. Corepack writes its shims next to the
+      # *currently active* node (`dirname(process.execPath)`), and on Windows the
+      # generated `pnpm.cmd` is early-bound: it invokes the `node.exe` sitting in
+      # its own directory. A Linux shim goes through `#!/usr/bin/env node` and so
+      # late-binds to PATH, which is why only the Windows job was affected.
+      #
+      # With a single setup-node, Corepack has to run before it (`cache: pnpm`
+      # shells out to `pnpm store path`, so pnpm must already exist) — but that
+      # means the shims land beside the runner's *preinstalled* Node 22, and
+      # setup-node only prepends the toolcache to PATH without removing that
+      # directory. Windows then ran the whole build on Node 22 while `.nvmrc`
+      # asked for 24, surfacing as `Unsupported engine: wanted >=24.0.0`.
+      # Promoting to v7 did not fix it; the reports that it does concern Yarn
+      # with a bare `corepack enable`.
+      #
+      # Splitting the action resolves the chicken/egg in the only order where
+      # both constraints hold:
+      #   1. install Node 24 first, with no cache input, so nothing needs pnpm;
+      #   2. enable Corepack — the shims now bind to Node 24;
+      #   3. run setup-node again purely for `cache: pnpm`, which can now
+      #      resolve the store because pnpm is on PATH.
+      #
+      # `enable pnpm` stays scoped. Bare `corepack enable` also shims npm, and
+      # that shim refuses to run in a repository whose `packageManager` says
+      # pnpm — breaking the `npm install --global` inside install.sh that
+      # test:distribution runs. The pnpm version itself comes from
+      # `packageManager`, keeping package.json the single source.
+      - name: Set up Node
+        uses: actions/setup-node@v7
         with:
-          version: 10.29.3
-      - uses: actions/setup-node@v4
+          node-version-file: .nvmrc
+      - name: Enable Corepack
+        shell: bash
+        run: |
+          corepack enable pnpm
+          corepack install
+          node --version
+          pnpm --version
+      - name: Restore pnpm cache
+        uses: actions/setup-node@v7
         with:
-          node-version: 20.19.5
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
@@ -32,7 +71,7 @@ jobs:
       - run: pnpm test:source-install
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-${{ matrix.os }}

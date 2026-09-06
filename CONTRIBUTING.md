@@ -6,15 +6,17 @@ Thanks for helping improve the AI-generated pixel asset workflow. Contributions 
 
 Requirements:
 
-- Node.js 20.9 or newer
-- pnpm 10.29.3 through Corepack
-- macOS, Linux, or Windows with the native dependencies supported by Sharp
+- Node.js 24 or newer (`.nvmrc` pins the major; run `nvm use` to match)
+- pnpm 10.29.3 through Corepack (the version comes from `packageManager` in the root `package.json`)
+- macOS, Linux, or Windows — image codecs are WebAssembly, so no native build toolchain is needed
 
 ```bash
-corepack enable
+corepack enable pnpm
 pnpm install
 pnpm verify
 ```
+
+Scope Corepack to `pnpm`. Bare `corepack enable` also installs an `npm` shim, and that shim refuses to run inside this repository because `packageManager` is pnpm — which breaks `pnpm test:distribution`, since it installs the packed tarball with the real `npm`.
 
 Install Chromium once before browser tests:
 

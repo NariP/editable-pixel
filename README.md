@@ -64,7 +64,7 @@ Set Frame 1 to 160 ms and Frame 4 to 100 ms.
 
 ## Run locally
 
-Requires **Node.js 20.9+**. This starts a local editor, not a hosted web service.
+Requires **Node.js 24+**. This starts a local editor, not a hosted web service.
 
 ```bash
 npm install --global editable-pixel
@@ -78,10 +78,12 @@ Use an npm installation directory without `&`; npm's Windows `.cmd` wrapper cann
 <details>
 <summary>Build from source (requires pnpm 10.29.3)</summary>
 
+Corepack is scoped to `pnpm` on purpose: bare `corepack enable` also shims `npm`, and that shim refuses to run inside a repository whose `packageManager` is pnpm.
+
 ```bash
 git clone https://github.com/NariP/editable-pixel.git
 cd editable-pixel
-corepack enable
+corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm build
 node packages/pixel-cli/dist/cli.js open

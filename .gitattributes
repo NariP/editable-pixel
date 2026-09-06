@@ -1,0 +1,43 @@
+# Line endings are part of this repository's content, not a local preference.
+#
+# Windows sets `core.autocrlf=true` by default, and the GitHub Windows runner
+# inherits it: without this file every text file is checked out with CRLF there
+# while ubuntu/macOS get LF. Two concrete breakages that causes here:
+#
+#   * `.nvmrc` arrives as "24\r\n". `actions/setup-node` tolerates it, but the
+#     manifest guard in tests/manifests/runtime-versions.test.ts asserts the file
+#     is exactly one clean line — so CI failed on Windows only.
+#   * `install.sh` is POSIX sh. A CRLF copy breaks at the shebang (`\r` becomes
+#     part of the interpreter path) and inside every quoted string.
+#
+# `text=auto eol=lf` normalizes to LF in the index *and* in the working tree on
+# all platforms, so the checked-out bytes match the committed bytes everywhere.
+* text=auto eol=lf
+
+# Explicit shell/manifest declarations. `text=auto` already infers these, but
+# these two are the files whose breakage is silent and platform-specific, so the
+# rule is stated rather than inferred.
+install.sh text eol=lf
+.nvmrc     text eol=lf
+
+# If a Windows helper is ever added it must keep CRLF: cmd.exe mis-parses a
+# bare-LF batch file (notably `goto` labels and multi-line blocks).
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets must never be line-ending converted. `text=auto` would detect
+# these correctly via its NUL-byte heuristic, but a heuristic misfire silently
+# corrupts a committed asset, so the extensions used in this repository are
+# declared outright.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.mp4  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.wasm  binary

@@ -14,15 +14,48 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+
+      # WORKAROUND: https://github.com/actions/setup-node/issues/531
+      #
+      # setup-node runs twice on purpose, mirroring ci.yml so the two setups
+      # cannot drift. Corepack writes its shims next to the *currently active*
+      # node (`dirname(process.execPath)`), and on Windows the generated
+      # `pnpm.cmd` is early-bound to the `node.exe` in its own directory, so a
+      # Corepack-before-setup-node order pins the build to the runner's
+      # preinstalled Node instead of `.nvmrc`. This job only runs on ubuntu,
+      # where shims late-bind through `#!/usr/bin/env node` — the split is kept
+      # anyway so release and CI exercise an identical toolchain setup.
+      #
+      # Order: (1) install Node from .nvmrc with no cache input, so nothing needs
+      # pnpm yet; (2) enable Corepack, binding the shims to that Node; (3) run
+      # setup-node again for `cache: pnpm`, which can now resolve the store.
+      #
+      # `enable pnpm` stays scoped. Bare `corepack enable` also shims npm, and
+      # that shim refuses to run in a repository whose `packageManager` says
+      # pnpm — breaking the `npm install --global` inside install.sh that
+      # test:distribution runs. The pnpm version itself comes from
+      # `packageManager`, keeping package.json the single source.
+      #
+      # `registry-url` belongs on the *second* call: it writes the .npmrc that
+      # `npm publish` authenticates with, so it must be the setup that runs last.
+      - name: Set up Node
+        uses: actions/setup-node@v7
         with:
-          version: 10.29.3
-      - uses: actions/setup-node@v4
+          node-version-file: .nvmrc
+      - name: Enable Corepack
+        shell: bash
+        run: |
+          corepack enable pnpm
+          corepack install
+          node --version
+          pnpm --version
+      - name: Restore pnpm cache
+        uses: actions/setup-node@v7
         with:
-          node-version: 20.19.5
+          node-version-file: .nvmrc
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile

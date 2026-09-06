@@ -211,7 +211,7 @@ export class SessionStore {
     if (!(["browser", "codex", "claude"] as const).includes(host)) {
       throw new SessionError("HOST_MODE_INVALID", "Session host must be browser, codex, or claude.", 400);
     }
-    const id = token(18);
+    const id = createSessionId();
     const bootstrapToken = token(32);
     const persistentToken = token(32);
     const record: SessionRecord = {
@@ -1186,4 +1186,19 @@ function assertPatchLimit(patch: Patch): void {
 
 function token(bytes: number): string {
   return randomBytes(bytes).toString("base64url");
+}
+
+/**
+ * A session ID travels through argument vectors (`--session <id>`), URL queries and log lines,
+ * unlike the auth tokens, which only ever move inside request bodies and headers. base64url
+ * includes `-` and `_`, so a plain `token()` produced an ID starting with `-` about 1 time in 64,
+ * and an argument parser then read it as an option flag. The leading byte is redrawn until it maps
+ * to an alphanumeric base64url digit; every other position keeps the full 64-symbol alphabet, and
+ * the length is unchanged, so this costs log2(64/62) ~= 0.046 bits out of 144.
+ */
+export function createSessionId(bytes = 18): string {
+  for (;;) {
+    const candidate = token(bytes);
+    if (/^[A-Za-z0-9]/.test(candidate)) return candidate;
+  }
 }

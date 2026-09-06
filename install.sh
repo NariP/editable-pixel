@@ -53,7 +53,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 command -v node >/dev/null 2>&1 || {
-  echo "Editable Pixel requires Node.js 20.9 or newer: https://nodejs.org" >&2
+  echo "Editable Pixel requires Node.js 24 or newer: https://nodejs.org" >&2
   exit 1
 }
 command -v npm >/dev/null 2>&1 || {
@@ -61,11 +61,15 @@ command -v npm >/dev/null 2>&1 || {
   exit 1
 }
 
+# Mirrors the `engines.node` floor in packages/pixel-cli/package.json (>=24.0.0).
+# The floor is a whole major, so only the major is compared: a minor term here
+# would be dead code that silently rots the next time the floor moves.
+# tests/manifests/runtime-versions.test.ts keeps the two in step.
 node -e '
-  const [major, minor] = process.versions.node.split(".").map(Number);
-  if (major < 20 || (major === 20 && minor < 9)) process.exit(1);
+  const [major] = process.versions.node.split(".").map(Number);
+  if (major < 24) process.exit(1);
 ' || {
-  echo "Editable Pixel requires Node.js 20.9 or newer; found $(node --version)." >&2
+  echo "Editable Pixel requires Node.js 24 or newer; found $(node --version)." >&2
   exit 1
 }
 

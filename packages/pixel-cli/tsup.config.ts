@@ -25,7 +25,7 @@ export default defineConfig({
   },
   format: ["esm"],
   platform: "node",
-  target: "node20",
+  target: "node24",
   bundle: true,
   define: { __EDITABLE_PIXEL_VERSION__: JSON.stringify(version) },
   splitting: false,
