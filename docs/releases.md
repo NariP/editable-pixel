@@ -28,6 +28,15 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Compatibility policy
 
+### 1.0.4
+
+- **Requires Node.js 24 or newer.** Node 20 reached end of life in April 2026, and the previous `>=20.9.0` floor was already unmet in practice: `commander@15`, a dependency, requires `>=22.12.0`. Installing on Node 20 or 22 now fails with `EBADENGINE`, and `install.sh` refuses rather than proceeding.
+- Reads the development and CI runtime from `.nvmrc`, so the version is stated once instead of in nine places.
+- Activates pnpm through Corepack from the `packageManager` field. Contributors should run `corepack enable pnpm` — the unscoped `corepack enable` also shims npm, and that shim refuses to run inside this repository.
+- Fixes session IDs that began with `-`, which an argument parser read as an option flag and which made `--session <id>` fail for roughly one session in 64.
+- Pins line endings through `.gitattributes` so checkouts match across platforms.
+- Remains compatible with Pixel Document version `1`.
+
 ### 1.0.3
 
 - Reduces the installed package from about 50 MB to about 19 MB, so `npm install -g` and the first `npx` run download and unpack less.
