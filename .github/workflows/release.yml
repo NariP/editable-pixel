@@ -17,12 +17,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.29.3
+      # Ordering matters twice over:
+      #  1. Corepack runs before actions/setup-node because `cache: pnpm` locates
+      #     the store by running `pnpm store path`, so pnpm must be on PATH first.
+      #  2. `enable pnpm` is scoped deliberately. Bare `corepack enable` also
+      #     shims npm, and that shim refuses to run in a repository whose
+      #     `packageManager` field says pnpm — which would break the
+      #     `npm install --global` inside install.sh that test:distribution runs.
+      # The pnpm version itself comes from `packageManager`, keeping package.json
+      # the single source.
+      - name: Enable Corepack
+        shell: bash
+        run: |
+          corepack enable pnpm
+          corepack install
+          pnpm --version
       - uses: actions/setup-node@v4
         with:
-          node-version: 20.19.5
+          node-version-file: .nvmrc
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile

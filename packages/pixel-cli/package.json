@@ -14,7 +14,7 @@
   },
   "keywords": ["pixel-art", "sprite", "mcp", "codex", "claude", "local-first"],
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=24.0.0"
   },
   "bin": {
     "editable-pixel": "./dist/cli.js",
