@@ -1,4 +1,5 @@
 import { encodePng } from "@editable-pixel/image-codec";
+import { renderRgba } from "@editable-pixel/renderer";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { describe, expect, it } from "vitest";
 
@@ -269,5 +270,105 @@ describe("Pixel Converter", () => {
     expect(result.original).toMatchObject({ width, height });
     expect(result.document.contentBox).toEqual({ x: 4, y: 8, width: 24, height: 16 });
     expect(result.document.contentBounds).toEqual({ x: 4, y: 10, width: 24, height: 12 });
+  });
+  /**
+   * `thresholdAlpha` runs inside `decodeImage`, before `alphaBounds` measures the
+   * content and before `resizeNearest` rescales it. That ordering is load-bearing
+   * and was only a comment until this suite pinned it:
+   *
+   *  - `resizeNearest` samples without premultiplying. sharp — and every resampler
+   *    that blends — premultiplies, which rewrites the RGB of a semi-transparent
+   *    pixel. Binarising alpha first means no such pixel ever reaches the resize,
+   *    so the two implementations cannot diverge.
+   *  - `alphaBounds` counts any pixel with alpha != 0 as content. Thresholding
+   *    first is what keeps a faint pixel out of the measured bounds, and the
+   *    bounds decide the crop and therefore the scale factor.
+   *
+   * Asserting only "the output alpha is 0 or 255" would not hold the invariant:
+   * binarising after the resize produces the same two-valued alpha and would pass.
+   * The fixtures below are built so that moving `thresholdAlpha` downstream shifts
+   * the measured bounds — a faint pixel outside the opaque content survives long
+   * enough to be measured, the crop widens, and the content lands scaled down and
+   * offset instead of filling the canvas.
+   */
+  describe("binarises alpha before resampling", () => {
+    const fixture = (width: number, height: number, faintAlpha: number): Uint8ClampedArray => {
+      const data = new Uint8ClampedArray(width * height * 4);
+      const set = (x: number, y: number, [r, g, b, a]: [number, number, number, number]): void => {
+        const offset = (y * width + x) * 4;
+        data[offset] = r;
+        data[offset + 1] = g;
+        data[offset + 2] = b;
+        data[offset + 3] = a;
+      };
+      // Opaque red fills the left half; a faint column hugs the right edge.
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width / 2; x += 1) set(x, y, [255, 0, 0, 255]);
+        set(width - 1, y, [0, 0, 255, faintAlpha]);
+      }
+      return data;
+    };
+
+    it.each([
+      { label: "the default alphaThreshold", faintAlpha: 100, options: {} },
+      { label: "a non-default alphaThreshold", faintAlpha: 200, options: { alphaThreshold: 210 } }
+    ])("drops sub-threshold pixels before measuring content with $label", async ({ faintAlpha, options }) => {
+      const result = await convertImage(await rawPng(8, 4, fixture(8, 4, faintAlpha)), {
+        canvasWidth: 8,
+        canvasHeight: 8,
+        colorCount: 4,
+        contentScale: 1,
+        ...options
+      });
+
+      // The faint column is below the threshold, so the measured content is the
+      // 4x4 opaque block alone and it scales up to fill the whole canvas. If the
+      // thresholding ran after the resize, `alphaBounds` would have counted the
+      // faint column too: the crop becomes 8x4, the content lands as a 4x4 block
+      // at y=2, and this assertion fails.
+      expect(result.document.contentBounds).toEqual({ x: 0, y: 0, width: 8, height: 8 });
+      expect(result.document.palette).toEqual(["#00000000", "#ff0000ff"]);
+      expect(result.document.layers[0]!.frames["frame-1"]).toEqual(new Array(64).fill(1));
+
+      // The invariant as stated: nothing semi-transparent survives to the output.
+      const rendered = renderRgba(result.document);
+      const alphas = new Set<number>();
+      for (let offset = 3; offset < rendered.data.length; offset += 4) alphas.add(rendered.data[offset]!);
+      expect([...alphas].sort((left, right) => left - right)).toEqual([255]);
+    });
+
+    it.each([
+      { label: "the default alphaThreshold", alpha: 200, options: {} },
+      { label: "a non-default alphaThreshold", alpha: 220, options: { alphaThreshold: 210 } }
+    ])("keeps the RGB of an at-threshold pixel through a downscale with $label", async ({ alpha, options }) => {
+      const width = 8;
+      const height = 8;
+      const data = new Uint8ClampedArray(width * height * 4);
+      for (let offset = 0; offset < data.length; offset += 4) {
+        data[offset] = 200;
+        data[offset + 1] = 40;
+        data[offset + 2] = 40;
+        data[offset + 3] = alpha;
+      }
+
+      const result = await convertImage(await rawPng(width, height, data), {
+        canvasWidth: 4,
+        canvasHeight: 4,
+        colorCount: 4,
+        contentScale: 1,
+        ...options
+      });
+
+      // Alpha is promoted to 255 before the 8x8 -> 4x4 downscale, so the resize
+      // samples opaque pixels and the colour survives byte for byte. A resampler
+      // that premultiplied a still-semi-transparent pixel would darken it towards
+      // black and this exact palette entry would not appear.
+      expect(result.document.palette).toEqual(["#00000000", "#c82828ff"]);
+
+      const rendered = renderRgba(result.document);
+      const alphas = new Set<number>();
+      for (let offset = 3; offset < rendered.data.length; offset += 4) alphas.add(rendered.data[offset]!);
+      expect([...alphas].every((value) => value === 0 || value === 255)).toBe(true);
+    });
   });
 });
