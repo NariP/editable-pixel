@@ -7,7 +7,7 @@ import { createPixelDocument, serializePixelDocument } from "@editable-pixel/doc
 import { createPixelProject, parsePixelProject, serializePixelProject } from "@editable-pixel/project";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SessionStore } from "./session-store.js";
+import { SessionStore, createSessionId } from "./session-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -340,5 +340,43 @@ describe("SessionStore", () => {
       actor: "ai",
       reason: "Split a second clip"
     });
+  });
+});
+
+describe("session id shape", () => {
+  // base64url includes `-` and `_`. A session id starting with `-` was read as an
+  // option flag by the CLI's argument parser, so `--session <id>` failed for roughly
+  // 1 in 64 sessions — twice observed in CI. These are deterministic where the bug was not:
+  // a single session only reproduces it 1.6% of the time.
+  it("never mints a session whose id an argument parser reads as a flag", async () => {
+    // Drives the real create() path, not the generator directly, so that reverting the
+    // call site to a plain token() fails here rather than passing on an unused helper.
+    const store = new SessionStore();
+    const ids: string[] = [];
+    for (let index = 0; index < 400; index += 1) {
+      ids.push((await store.create({ document: createPixelDocument({ width: 1, height: 1 }) })).session.id);
+    }
+    const leadingFlag = ids.filter((id) => id.startsWith("-") || id.startsWith("_"));
+
+    expect(leadingFlag, `${leadingFlag.length} of ${ids.length} minted ids would parse as flags`).toEqual([]);
+  });
+
+  it("never returns a flag-shaped id from the generator", () => {
+    const ids = Array.from({ length: 10_000 }, () => createSessionId());
+
+    expect(ids.filter((id) => id.startsWith("-") || id.startsWith("_"))).toEqual([]);
+  });
+
+  it("keeps the full base64url alphabet after the first character", () => {
+    // Only the leading byte is constrained; narrowing the rest would cost real entropy.
+    const tail = new Set(Array.from({ length: 10_000 }, () => createSessionId()).flatMap((id) => [...id.slice(1)]));
+
+    expect(tail.has("-") || tail.has("_"), "later positions must keep the full alphabet").toBe(true);
+  });
+
+  it("keeps the id length stable", () => {
+    const lengths = new Set(Array.from({ length: 200 }, () => createSessionId().length));
+
+    expect(lengths.size, "redrawing the first byte must not change the length").toBe(1);
   });
 });
