@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "test": "pnpm -r --if-present test",
     "test:e2e": "playwright test",
+    "sync-version": "node scripts/sync-version.mjs",
     "test:distribution": "node tests/distribution/package-install.mjs",
     "test:source-install": "node tests/distribution/source-install.mjs",
     "typecheck": "pnpm -r --if-present typecheck",

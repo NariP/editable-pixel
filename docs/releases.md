@@ -18,7 +18,7 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Maintainer checklist
 
-1. Update the package version and user-facing compatibility notes.
+1. Bump `version` in `packages/pixel-cli/package.json`, run `pnpm sync-version` to propagate it to the host plugin manifests, and update the user-facing compatibility notes. `--version` output and the MCP handshake need no edit: the build injects them from the same field.
 2. Confirm the release notes state the supported Pixel Document version (`1`).
 3. Run `pnpm verify`, `pnpm test:e2e`, `pnpm test:distribution`, and `pnpm test:source-install` locally.
 4. Confirm `npm pack --dry-run` contains the three executables, `web/index.html`, README files, and license.
