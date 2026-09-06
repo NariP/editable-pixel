@@ -8,6 +8,10 @@ export default tseslint.config(
       "**/dist/**",
       "**/coverage/**",
       "**/node_modules/**",
+      // Untracked local scratch output (gitignored, absent in CI). It carries its
+      // own package.json, lockfile and eslint 9 install, so linting it from here
+      // mixes two ESLint majors and crashes in scope-manager.
+      "artifacts/**",
       "packages/pixel-cli/web/**",
       "**/playwright-report/**",
       "**/test-results/**"

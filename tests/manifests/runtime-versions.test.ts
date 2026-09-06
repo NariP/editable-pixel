@@ -228,3 +228,76 @@ describe("runtime version single source", () => {
     }
   });
 });
+
+/**
+ * The three `actions/*` pins were the values the repository was created with and
+ * had never moved, which is the same silent-drift shape as the runtime floor
+ * above — except an action pin fails *outward*, on infrastructure the tests
+ * cannot otherwise reach.
+ *
+ * It was not cosmetic. On `actions/setup-node@v4` this repository's Windows job
+ * failed outright: Corepack writes its shims beside the *current* node, so they
+ * landed in the runner's preinstalled Node directory, and a Windows `.cmd` shim
+ * is early-bound to the `node.exe` next to it (a Linux shim goes through
+ * `#!/usr/bin/env node` and so late-binds, which is why only Windows broke).
+ * `pnpm` therefore ran on Node 22 while `.nvmrc` asked for 24, and the build
+ * died on `Unsupported engine: wanted >=24.0.0`. See actions/setup-node#531.
+ *
+ * The floor is expressed as a minimum rather than an exact pin: a newer major
+ * released upstream should not turn this suite red, but slipping back below the
+ * version that fixes the Windows break must.
+ */
+const MINIMUM_ACTION_MAJORS: Readonly<Record<string, number>> = {
+  "actions/checkout": 7,
+  "actions/setup-node": 7,
+  "actions/upload-artifact": 7
+};
+
+describe("GitHub Action versions", () => {
+  const workflows = [".github/workflows/ci.yml", ".github/workflows/release.yml"] as const;
+
+  it.each(workflows)("pins every action to a supported major in %s", (workflow) => {
+    const source = withoutComments(readSource(workflow));
+    const used = [...source.matchAll(/^\s*-?\s*uses:\s*(\S+?)@(\S+)\s*$/gm)];
+
+    // Without this the whole assertion loop would pass by iterating zero times
+    // if the `uses:` shape ever changed.
+    expect(used.length, `${workflow}: no \`uses:\` steps found`).toBeGreaterThan(0);
+
+    for (const [, action, ref] of used) {
+      const minimum = MINIMUM_ACTION_MAJORS[action as string];
+
+      // An unknown action is a deliberate failure, not a skip: a new action
+      // added without a floor here would otherwise never be version-checked.
+      // Thrown rather than `expect`ed so the check also narrows the type for the
+      // comparison below, instead of asserting and then casting the doubt away.
+      if (minimum === undefined) {
+        throw new Error(`${workflow}: no known-good major recorded for ${action}`);
+      }
+
+      const pinned = /^v(\d+)/.exec(ref as string);
+      expect(pinned, `${workflow}: ${action} is pinned to "${ref}", not a vN tag`).not.toBeNull();
+
+      expect(
+        Number((pinned as RegExpExecArray)[1]),
+        `${workflow}: ${action}@${ref} is below v${minimum}; on setup-node v4 the ` +
+          `Corepack shim bound to the runner's default Node and broke the Windows job`
+      ).toBeGreaterThanOrEqual(minimum);
+    }
+  });
+
+  it("checks every action that either workflow actually uses", () => {
+    // Guards the table itself: an entry that no workflow references is dead
+    // weight, and — more importantly — proves the assertion above is reached for
+    // all three actions rather than silently covering only the ones in one file.
+    const referenced = new Set(
+      workflows.flatMap((workflow) =>
+        [...withoutComments(readSource(workflow)).matchAll(/uses:\s*(\S+?)@/g)].map(
+          ([, action]) => action as string
+        )
+      )
+    );
+
+    expect([...referenced].sort()).toEqual(Object.keys(MINIMUM_ACTION_MAJORS).sort());
+  });
+});

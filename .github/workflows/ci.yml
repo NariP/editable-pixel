@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Ordering matters twice over:
       #  1. Corepack runs before actions/setup-node because `cache: pnpm` locates
       #     the store by running `pnpm store path`, so pnpm must be on PATH first.
@@ -28,13 +28,20 @@ jobs:
       #     `npm install --global` inside install.sh that test:distribution runs.
       # The pnpm version itself comes from `packageManager`, keeping package.json
       # the single source.
+      #
+      # This ordering requires actions/setup-node v7 or newer on Windows.
+      # Corepack writes its shims next to the *current* node, so under v4 they
+      # landed in the runner's preinstalled Node dir; setup-node then only
+      # prepended the toolcache to PATH, and the Windows `.cmd` shim — which is
+      # early-bound to the node.exe beside it, unlike a Linux `#!/usr/bin/env
+      # node` shim — kept invoking the old runtime. See actions/setup-node#531.
       - name: Enable Corepack
         shell: bash
         run: |
           corepack enable pnpm
           corepack install
           pnpm --version
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -44,7 +51,7 @@ jobs:
       - run: pnpm test:source-install
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-${{ matrix.os }}
