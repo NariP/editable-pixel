@@ -1,6 +1,6 @@
 {
   "name": "editable-pixel",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "description": "Local-first pixel workbench with a browser editor, CLI, MCP server, and Codex/Claude skill.",
   "type": "module",
   "license": "MIT",
