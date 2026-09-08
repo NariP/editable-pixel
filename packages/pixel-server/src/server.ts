@@ -226,17 +226,15 @@ export async function startPixelServer(options: PixelServerOptions = {}): Promis
           return json(response, 200, session);
         }
         if (request.method === "POST" && action === "actions") {
-          const body = await jsonBody<{ action: EditablePixelAction; reason: string }>(request);
+          const body = await jsonBody<{ action?: EditablePixelAction; operations?: unknown[]; baseRevision?: number; reason: string }>(request);
           if (!body.reason?.trim()) throw new SessionError("ACTION_REASON_REQUIRED", "AI edits require a concise reason.", 400);
-          const session = await store.executeAction(sessionId, {
-            action: body.action,
-            reason: body.reason.trim(),
-            actor: "ai",
-            client: clientName ?? "mcp"
-          });
-          broadcast(sockets, sessionId, {
+          if (Boolean(body.action) === Boolean(body.operations)) throw new SessionError("ACTION_INVALID", "Specify action or operations exclusively.", 400);
+          const session = body.operations
+            ? await store.executeBatch(sessionId, { operations: body.operations, baseRevision: body.baseRevision!, reason: body.reason.trim(), actor: "ai", client: clientName ?? "mcp" })
+            : await store.executeAction(sessionId, { action: body.action!, baseRevision: body.baseRevision, reason: body.reason.trim(), actor: "ai", client: clientName ?? "mcp" });
+          if (session.mutation?.committed !== false) broadcast(sockets, sessionId, {
             type: "state",
-            ...(isProjectAction(body.action) ? { projectChanged: true } : {}),
+            ...(body.operations || (body.action && isProjectAction(body.action)) ? { projectChanged: true } : {}),
             ...sessionMessage(session)
           });
           return json(response, 200, session);

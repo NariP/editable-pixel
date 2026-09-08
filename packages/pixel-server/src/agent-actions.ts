@@ -5,6 +5,7 @@ import {
   clearNormalSelection,
   clearSelection,
   createNormalPixelPatch,
+  createRemapColorsPatch,
   createPixelPatch,
   duplicateFrame,
   duplicateLayer,
@@ -28,6 +29,7 @@ import {
   setFrameLightingInterpolation,
   setLayerOpacity,
   setLayerVisibility,
+  type RemapColorsOptions,
   type Patch
 } from "@editable-pixel/core";
 import {
@@ -42,6 +44,7 @@ import { assertPixelProject, type PixelProject } from "@editable-pixel/project";
 export type EditActor = "user" | "ai" | "system";
 
 export type EditablePixelAction =
+  | ({ type: "remap_colors" } & RemapColorsOptions)
   | {
     type: "paint_pixels";
     pixels: Array<{ x: number; y: number; colorIndex: number }>;
@@ -155,6 +158,8 @@ export function createActionPatch(
   const selection = document.selection;
   const target = targetIds(document, action, fallback);
   switch (action.type) {
+    case "remap_colors":
+      return createRemapColorsPatch(document, action, reason).patch;
     case "paint_pixels": {
       const bounded = action.requireSelection ?? Boolean(selection);
       const activeSelection = bounded ? requireSelection(document) : undefined;
@@ -255,6 +260,8 @@ export function createActionPatch(
     case "reorder_clip":
     case "rename_project":
       throw new Error(`${action.type} must be applied to a Pixel Project transaction.`);
+    default:
+      throw new Error(`Unknown action type: ${String((action as { type?: unknown }).type)}`);
   }
 }
 

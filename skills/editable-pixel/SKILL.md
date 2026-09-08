@@ -25,7 +25,7 @@ Use the installed `editable-pixel` CLI for files and session startup. Use the `e
    - visual semantics or QA: `get_screenshot`
    - active web tab/tool/Source/Project/conversion/playback state: `get_web_context`
 4. If the target is not already selected, call `set_selection`. Use the existing selection when it already matches.
-5. Call `use_editable_pixel` once per meaningful edit. It applies immediately and records actor=`ai`.
+5. Plan all changes first. Call `use_editable_pixel` once with `base_revision` and `remap_colors` for multiple shades, or `operations` for mixed edits. Successful items apply immediately as one actor=`ai` History entry; inspect failed/skipped item results.
 6. Re-read focused context only when needed. Use `get_history` or `undo` to inspect or revert.
 
 Use `control_web` for browser-only state and Project workflows, `import_files` for validated local inputs, and `export_web` for the same download options exposed by the header Export UI. Do not automate DOM clicks when a semantic MCP action exists.
@@ -35,6 +35,8 @@ Do not require a preview approval. Preview and Screenshot are optional QA tools.
 ## Context budget
 
 - Prefer `get_metadata` over a full Project or Document dump.
+- Do not add colors and replace shades one at a time. Send all original-index→RGBA mappings in one `remap_colors` action. See exact calls in [live editing](references/live-editing.md).
+- Reuse compact mutation results for confirmation; re-read only the affected context when needed.
 - Prefer the active selection. Otherwise pass explicit bounds or rely on content bounds.
 - Start with padding 1; increase only when edge continuity needs more context.
 - Request normals only for normal-map tasks.

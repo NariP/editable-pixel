@@ -7,8 +7,10 @@ import {
   createDocumentPatch,
   createPalettePixelPatch,
   createPixelPatch,
+  createRemapColorsPatch,
   getNormalPixels,
   getPixels,
+  type EditItemResult,
   type Patch
 } from "@editable-pixel/core";
 import {
@@ -51,6 +53,14 @@ export interface SessionProjectContext {
   layerName: string;
 }
 
+export interface MutationSummary {
+  baseRevision: number;
+  revision: number;
+  committed: boolean;
+  changedPixels: number;
+  results: Array<EditItemResult & { items?: EditItemResult[]; target?: unknown }>;
+}
+
 export interface SessionSummary {
   id: string;
   documentId: string;
@@ -67,6 +77,7 @@ export interface SessionSummary {
 export type SessionHost = "browser" | "codex" | "claude";
 
 export interface SessionSnapshot extends SessionSummary {
+  mutation?: MutationSummary;
   document: PixelDocument;
   project?: SessionProjectState;
 }
@@ -623,7 +634,8 @@ export class SessionStore {
     session: SessionRecord,
     patchOrId: Patch | string,
     actor: EditActor,
-    client?: string
+    client?: string,
+    projectOverride?: PixelProject
   ): Promise<SessionSnapshot> {
     const patch = typeof patchOrId === "string" ? session.pending.get(patchOrId)?.patch : patchOrId;
     if (!patch) throw new SessionError("PATCH_NOT_FOUND", "Preview the patch again before applying it.", 404);
@@ -633,7 +645,7 @@ export class SessionStore {
     const beforeProject = session.project ? structuredClone(session.project) : undefined;
     session.document = applyPatch(session.document, patch);
     if (session.project) {
-      session.project = synchronizeProjectRevision(session.project, session.document, session.projectContext);
+      session.project = synchronizeProjectRevision(projectOverride ?? session.project, session.document, session.projectContext);
       session.document = structuredClone(session.project.document);
       session.projectContext = contextFromProject(session.project, session.projectContext);
     }
@@ -651,11 +663,113 @@ export class SessionStore {
     return snapshot(session);
   }
 
+  async executeBatch(
+    id: string,
+    input: { operations: unknown[]; reason: string; baseRevision: number; actor?: EditActor; client?: string }
+  ): Promise<SessionSnapshot & { mutation: MutationSummary }> {
+    const session = this.require(id);
+    const base = input.baseRevision;
+    const assertBase = () => {
+      if (!Number.isInteger(base) || base !== session.document.revision) {
+        throw new SessionError("REVISION_CONFLICT", "The base revision changed. Read current context before retrying.", 409);
+      }
+    };
+    assertBase();
+    if (!Array.isArray(input.operations) || input.operations.length === 0 || input.operations.length > 256) {
+      throw new SessionError("BATCH_INVALID", "Provide between 1 and 256 operations.", 400);
+    }
+    await this.assertFileUnchanged(session);
+    assertBase();
+    const initial = structuredClone(session.document);
+    let document = structuredClone(initial);
+    let project = session.project ? structuredClone(session.project) : undefined;
+    const operations = input.operations.map((value) => value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown> : {});
+    const counts = new Map<unknown, number>();
+    for (const operation of operations) counts.set(operation.id, (counts.get(operation.id) ?? 0) + 1);
+    const completed = new Map<string, EditItemResult["status"]>();
+    const results: MutationSummary["results"] = [];
+    for (const [index, operation] of operations.entries()) {
+      const operationId = typeof operation.id === "string" ? operation.id : undefined;
+      const result: MutationSummary["results"][number] = { index, ...(operationId ? { id: operationId } : {}), status: "failed" };
+      try {
+        if (!operationId || operationId.length > 128) throw new Error("INVALID_ID: Operation IDs must be nonempty strings of at most 128 characters.");
+        if (counts.get(operationId)! > 1) throw new Error("DUPLICATE_ID: Operation IDs must be unique.");
+        if (operation.dependsOn !== undefined) {
+          if (!Array.isArray(operation.dependsOn) || operation.dependsOn.some((dependency) => typeof dependency !== "string")) {
+            throw new Error("INVALID_DEPENDENCY: dependsOn must contain operation IDs.");
+          }
+          if (operation.dependsOn.some((dependency) => !["applied", "noop"].includes(completed.get(dependency) ?? ""))) {
+            result.status = "skipped";
+            throw new Error("DEPENDENCY_FAILED: Dependencies must precede this item and complete successfully.");
+          }
+        }
+        if (typeof operation.validationError === "string") throw new Error(`ACTION_INVALID: ${operation.validationError}`);
+        if (!operation.action || typeof operation.action !== "object" || Array.isArray(operation.action)) throw new Error("ACTION_INVALID: An action object is required.");
+        const action = operation.action as EditablePixelAction;
+        const fallback = { layerId: session.projectContext?.layerId ?? document.layers[0]!.id, frameId: session.projectContext?.frameId ?? document.frames[0]!.id };
+        result.target = action.type === "remap_colors"
+          ? action.selectionOnly ? { scope: "selection", layerId: document.selection?.layerId, frameId: document.selection?.frameId } : { scope: "targets", targets: action.targets }
+          : isProjectAction(action) ? { projectId: project?.id } : {
+            layerId: "layerId" in action ? action.layerId ?? fallback.layerId : document.selection?.layerId ?? fallback.layerId,
+            frameId: "frameId" in action ? action.frameId ?? fallback.frameId : document.selection?.frameId ?? fallback.frameId
+          };
+        let next = document;
+        let nextProject = project;
+        if (isProjectAction(action)) {
+          if (!project) throw new Error("PROJECT_REQUIRED: This operation requires a Project.");
+          nextProject = applyProjectAction(project, action);
+          nextProject.revision = project.revision;
+          nextProject.updatedAt = project.updatedAt;
+        } else {
+          const remapped = action.type === "remap_colors" ? createRemapColorsPatch(document, action, input.reason) : undefined;
+          const patch = remapped?.patch ?? createActionPatch(document, action, input.reason, fallback);
+          assertPatchLimit(patch);
+          assertActiveSelection({ ...session, document }, patch);
+          next = applyPatch(document, patch);
+          next.revision = document.revision;
+          next.metadata.modifiedBy = document.metadata.modifiedBy;
+          if (project) nextProject = synchronizeProjectDocument(project, next, session.projectContext);
+          if (remapped) {
+            result.items = remapped.results;
+            if (remapped.results.some((item) => item.status === "failed")) result.status = remapped.changedPixels > 0 ? "partial" : "failed";
+            else result.status = remapped.changedPixels > 0 ? "applied" : "noop";
+          }
+        }
+        const changed = JSON.stringify(next) !== JSON.stringify(document) || JSON.stringify(nextProject) !== JSON.stringify(project);
+        if (!result.items) result.status = changed ? "applied" : "noop";
+        document = next;
+        project = nextProject;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const separator = message.indexOf(": ");
+        result.code = separator > 0 && /^[A-Z_]+$/.test(message.slice(0, separator)) ? message.slice(0, separator) : "ACTION_INVALID";
+        result.message = separator > 0 && result.code !== "ACTION_INVALID" ? message.slice(separator + 2) : message;
+      }
+      results.push(result);
+      if (operationId) completed.set(operationId, result.status);
+    }
+    const committed = JSON.stringify(document) !== JSON.stringify(initial) || JSON.stringify(project) !== JSON.stringify(session.project);
+    let changedPixels = 0;
+    for (const layer of initial.layers) for (const [frameId, pixels] of Object.entries(layer.frames)) {
+      const after = document.layers.find((candidate) => candidate.id === layer.id)?.frames[frameId];
+      changedPixels += pixels.filter((pixel, index) => after?.[index] !== pixel).length;
+    }
+    assertBase();
+    const state = committed
+      ? await this.applyVerifiedPatch(session, createDocumentPatch(initial, document, input.reason), input.actor ?? "ai", input.client ?? "mcp", project)
+      : snapshot(session);
+    return { ...state, mutation: { baseRevision: base, revision: state.revision, committed, changedPixels, results } };
+  }
+
   async executeAction(
     id: string,
-    input: { action: EditablePixelAction; reason: string; actor?: EditActor; client?: string }
+    input: { action: EditablePixelAction; reason: string; baseRevision?: number; actor?: EditActor; client?: string }
   ): Promise<SessionSnapshot> {
     const session = this.require(id);
+    if (input.action?.type === "remap_colors" || input.baseRevision !== undefined) {
+      return this.executeBatch(id, { ...input, baseRevision: input.baseRevision ?? session.document.revision, operations: [{ id: "action", action: input.action }] });
+    }
     try {
       if (isProjectAction(input.action)) {
         if (!session.project) {

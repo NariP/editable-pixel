@@ -136,6 +136,12 @@ export class PixelServerClient {
     });
   }
 
+  executeBatch(id: string, operations: unknown[], reason: string, baseRevision: number): Promise<SessionSnapshot> {
+    return this.request(`/api/sessions/${encodeURIComponent(id)}/actions`, {
+      method: "POST", body: { operations, reason, baseRevision }
+    });
+  }
+
   executeWebCommand<T = unknown>(id: string, command: WebControlCommand): Promise<{
     sessionId: string;
     result: T;
