@@ -1,4 +1,5 @@
 import { createPixelDocument, NEUTRAL_NORMAL, type PixelDocument, type Selection } from "@editable-pixel/document";
+import { encodePng } from "@editable-pixel/image-codec";
 import { createEditablePixelMcpServer } from "@editable-pixel/mcp";
 import { PixelServerClient } from "@editable-pixel/server/client";
 import { Client, InMemoryTransport, type CallToolResult } from "@modelcontextprotocol/client";
@@ -171,6 +172,100 @@ function parityDocument(): PixelDocument {
   return document;
 }
 
+test("UI and MCP reopen independent projects without reload or save conflicts", async ({ page, context, baseURL }) => {
+  await withParitySessions(page, context, baseURL, async ({ api, client, webId, mcpId, mcpPage, fixture, sessionHeaders }) => {
+    for (const [browser, sessionId, useMcp] of [[page, webId, false], [mcpPage, mcpId, true]] as const) {
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.id).toBeTruthy();
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByRole("textbox", { name: "Project name", exact: true }).fill(`Original ${useMcp ? "MCP" : "UI"}`);
+      await browser.getByRole("textbox", { name: "Project name", exact: true }).press("Enter");
+      await browser.keyboard.press("Escape");
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.name).toBe(`Original ${useMcp ? "MCP" : "UI"}`);
+      const beforeSourceRevision = (await api.getSession(sessionId)).project!.revision;
+      const source = Buffer.from(await encodePng({ width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) }));
+      await browser.locator('input[type="file"]').setInputFiles({ name: "original-source.png", mimeType: "image/png", buffer: source });
+      await browser.getByRole("button", { name: /Add Source/ }).click();
+      await expect(browser.getByLabel("1 source")).toBeVisible();
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(beforeSourceRevision);
+      const original = (await api.getSession(sessionId)).project!;
+      const savedResponse = await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
+        headers: sessionHeaders(sessionId)
+      });
+      expect(savedResponse.ok()).toBe(true);
+      const saved = (await savedResponse.json()).project;
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByLabel("Open Project file input").setInputFiles({
+        name: "original.pixel-project.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(saved))
+      });
+      await expect(browser.getByRole("navigation", { name: "Project location" })).toContainText(original.name);
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(original.revision);
+      const reopened = await api.getSession(sessionId);
+      const readStored = async () => (await (await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
+        headers: sessionHeaders(sessionId)
+      })).json()).project;
+      await expect.poll(async () => {
+        const stored = await readStored();
+        return { revision: stored.revision, document: stored.document };
+      }).toEqual({ revision: reopened.project!.revision, document: reopened.document });
+      const beforeRejectedFile = await api.getSession(sessionId);
+      const storedBeforeRejectedFile = await readStored();
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByLabel("Open Project file input").setInputFiles({
+        name: "stale.pixel-project.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(saved))
+      });
+      await expect(browser.getByRole("alert")).toContainText("differs from the saved revision");
+      expect((await api.getSession(sessionId)).project).toEqual(beforeRejectedFile.project);
+      expect((await api.getSession(sessionId)).document).toEqual(beforeRejectedFile.document);
+      expect(await readStored()).toEqual(storedBeforeRejectedFile);
+      await browser.keyboard.press("Escape");
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toBeVisible();
+      if (useMcp) {
+        await callTool(client, "control_web", sessionId, { action: { type: "new_project", name: "Second project" } });
+      } else {
+        await browser.getByRole("button", { name: "Project menu" }).click();
+        await browser.getByRole("button", { name: "New", exact: true }).click();
+      }
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.id).not.toBe(original.id);
+      if (!useMcp) {
+        await browser.getByRole("button", { name: "Project menu" }).click();
+        await browser.getByRole("textbox", { name: "Project name", exact: true }).fill("Second UI project");
+        await browser.getByRole("textbox", { name: "Project name", exact: true }).press("Enter");
+        await browser.keyboard.press("Escape");
+        await expect.poll(async () => (await api.getSession(sessionId)).project?.name).toBe("Second UI project");
+      }
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toHaveCount(0);
+      const second = (await api.getSession(sessionId)).project!;
+      await callTool(client, "set_selection", sessionId, {
+        command: { type: "rect", x: 0, y: 0, width: 1, height: 1, mode: "replace" }
+      });
+      await callTool(client, "use_editable_pixel", sessionId, {
+        reason: "Edit second project only", action: { type: "paint_selection", color_index: 1 }
+      });
+      await expect.poll(async () => (await api.getSession(sessionId)).document.layers[0]!.frames["frame-1"]![0]).toBe(1);
+      const reopen = async (id: string, name: string) => {
+        if (useMcp) await callTool(client, "control_web", sessionId, { action: { type: "open_recent_project", project_id: id } });
+        else {
+          await browser.getByRole("button", { name: "Project menu" }).click();
+          await browser.locator(".recent-project-row > button:first-child").filter({ hasText: name }).click();
+        }
+        await expect.poll(async () => (await api.getSession(sessionId)).project?.id).toBe(id);
+      };
+      await reopen(original.id, original.name);
+      const originalRestored = (await api.getSession(sessionId)).document;
+      expect(originalRestored.layers).toEqual(fixture.layers);
+      expect(originalRestored.palette).toEqual(fixture.palette);
+      expect(originalRestored.canvas).toEqual(fixture.canvas);
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toBeVisible();
+      await reopen(second.id, second.name);
+      const restored = await api.getSession(sessionId);
+      expect(restored.document.layers[0]!.frames["frame-1"]![0]).toBe(1);
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toHaveCount(0);
+      expect(restored.project!.revision).toBeGreaterThan(second.revision);
+      await expect(browser.getByText("Conflict", { exact: true })).toHaveCount(0);
+    }
+  });
+});
+
 function documentContent(document: PixelDocument): PixelDocument {
   return { ...document, id: "semantic-document", revision: 0, metadata: { ...document.metadata, modifiedBy: "" } };
 }
@@ -190,27 +285,44 @@ async function withParitySessions(
   page: Page,
   context: BrowserContext,
   baseURL: string | undefined,
-  run: (harness: { api: PixelServerClient; client: Client; webId: string; mcpId: string; mcpPage: Page; fixture: PixelDocument }) => Promise<void>
+  run: (harness: { api: Pick<PixelServerClient, "getSession" | "getHistory">; client: Client; webId: string; mcpId: string; mcpPage: Page; fixture: PixelDocument; sessionHeaders: (id: string) => Record<string, string> }) => Promise<void>
 ): Promise<void> {
   if (!baseURL) throw new Error("The E2E server baseURL is required.");
-  const api = new PixelServerClient({
+  const registry = {
     pid: process.pid,
     port: Number(new URL(baseURL).port),
     daemonToken: "editable-pixel-e2e-daemon-token",
     startedAt: new Date().toISOString()
-  }, "mcp");
-  const server = createEditablePixelMcpServer(async () => api);
+  };
+  const daemonApi = new PixelServerClient(registry, "mcp");
+  const sessionAccess = new Map<string, { api: PixelServerClient; token: string }>();
+  const access = (id: string) => {
+    const session = sessionAccess.get(id);
+    if (!session) throw new Error("The requested parity session has not been created.");
+    return session;
+  };
+  const api: Pick<PixelServerClient, "getSession" | "getHistory"> = {
+    getSession: (id) => access(id).api.getSession(id),
+    getHistory: (id) => access(id).api.getHistory(id)
+  };
+  const sessionHeaders = (id: string) => ({ Authorization: `Bearer ${access(id).token}` });
+  const createSession = async (document: PixelDocument) => {
+    const created = await daemonApi.createSession({ document, host: "browser" });
+    sessionAccess.set(created.session.id, {
+      api: new PixelServerClient({ ...registry, daemonToken: created.persistentToken }, "mcp"),
+      token: created.persistentToken
+    });
+    return created;
+  };
+  const server = createEditablePixelMcpServer(async () => daemonApi);
   const client = new Client({ name: "editable-pixel-e2e-parity", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const sessionIds: string[] = [];
   let mcpPage: Page | undefined;
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const fixture = parityDocument();
-    const webSession = await api.createSession({ document: structuredClone(fixture), host: "browser" });
-    sessionIds.push(webSession.session.id);
-    const mcpSession = await api.createSession({ document: structuredClone(fixture), host: "browser" });
-    sessionIds.push(mcpSession.session.id);
+    const webSession = await createSession(structuredClone(fixture));
+    const mcpSession = await createSession(structuredClone(fixture));
     mcpPage = await context.newPage();
     await page.goto(`/?session=${webSession.session.id}&bootstrap=${webSession.bootstrapToken}`);
     await mcpPage.goto(`/?session=${mcpSession.session.id}&bootstrap=${mcpSession.bootstrapToken}`);
@@ -218,11 +330,11 @@ async function withParitySessions(
       await expect(browser.locator(".status-connected")).toBeVisible();
       await expect(browser.getByLabel("Pixel canvas")).toBeVisible();
     }
-    await run({ api, client, webId: webSession.session.id, mcpId: mcpSession.session.id, mcpPage, fixture });
+    await run({ api, client, webId: webSession.session.id, mcpId: mcpSession.session.id, mcpPage, fixture, sessionHeaders });
   } finally {
     await Promise.all([
       mcpPage?.close(),
-      ...sessionIds.map((id) => api.closeSession(id)),
+      ...[...sessionAccess].map(([id, session]) => session.api.closeSession(id)),
       client.close(),
       server.close(),
       clientTransport.close(),

@@ -152,7 +152,7 @@ describe("published package stays slim", () => {
     }
   });
 
-  it("loads Pretendard from the CDN so no webfont is bundled into web/assets", () => {
+  it("uses local fonts without bundling webfonts or requesting remote stylesheets", () => {
     const webManifest = JSON.parse(read("apps/web/package.json")) as {
       dependencies: Record<string, string>;
     };
@@ -161,13 +161,11 @@ describe("published package stays slim", () => {
     expect(read("apps/web/src/main.tsx")).not.toContain("pretendard");
 
     const html = read("apps/web/index.html");
-    expect(html).toContain("cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9");
-    // The dynamic subset splits by unicode-range, so browsers fetch only the
-    // glyph ranges a session actually renders.
-    expect(html).toContain("pretendardvariable-dynamic-subset.css");
+    expect(html).not.toMatch(/<link[^>]+href=["']https?:/);
+
   });
 
-  it("falls back to system UI fonts when the Pretendard CDN is unreachable", () => {
+  it("includes system UI fonts when Pretendard is not installed", () => {
     const rootFontFamily = /:root\s*\{[^}]*?font-family:\s*([^;]+);/s.exec(read("apps/web/src/styles.css"));
     const declaration = rootFontFamily?.[1];
 

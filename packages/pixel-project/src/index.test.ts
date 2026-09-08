@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ProjectAutosaveQueue,
+  ProjectRevisionConflictError,
   ProjectUnavailableError,
   clonePixelProject,
   commitPixelProject,
@@ -166,4 +167,66 @@ describe("Pixel Project", () => {
     expect(persisted).toEqual([2]);
     expect(queue.state).toEqual({ status: "saved", savedRevision: 2 });
   });
+  it("deduplicates an in-flight revision and saves newer edits against its acknowledgement", async () => {
+    let acknowledge!: () => void;
+    const calls: Array<[number, number]> = [];
+    const queue = new ProjectAutosaveQueue(async (project, expected) => {
+      calls.push([project.revision, expected]);
+      if (project.revision === 1) await new Promise<void>((resolve) => { acknowledge = resolve; });
+      return { revision: project.revision };
+    }, 0);
+    const first = commitPixelProject(createPixelProject(), (draft) => { draft.name = "First"; });
+    queue.enqueue(first);
+    queue.enqueue(first);
+    acknowledge();
+    await queue.flush();
+    expect(calls).toEqual([[1, 0]]);
+    const second = commitPixelProject(first, (draft) => { draft.name = "Second"; });
+    queue.enqueue(second);
+    queue.enqueue(second);
+    await queue.flush();
+    expect(calls).toEqual([[1, 0], [2, 1]]);
+    expect(queue.state).toEqual({ status: "saved", savedRevision: 2 });
+  });
+
+  it("coalesces newer content while an earlier revision is still saving", async () => {
+    let acknowledge!: () => void;
+    const calls: Array<{ revision: number; expected: number; name: string }> = [];
+    const queue = new ProjectAutosaveQueue(async (project, expected) => {
+      calls.push({ revision: project.revision, expected, name: project.name });
+      if (project.revision === 1) await new Promise<void>((resolve) => { acknowledge = resolve; });
+      return { revision: project.revision };
+    }, 0);
+    const first = commitPixelProject(createPixelProject(), (draft) => { draft.name = "First"; });
+    const second = commitPixelProject(first, (draft) => { draft.name = "Second"; });
+    const third = commitPixelProject(second, (draft) => { draft.name = "Latest content"; });
+    queue.enqueue(first);
+    queue.enqueue(second);
+    queue.enqueue(third);
+    expect(calls).toHaveLength(1);
+    acknowledge();
+    await queue.flush();
+    expect(calls).toEqual([
+      { revision: 1, expected: 0, name: "First" },
+      { revision: 3, expected: 1, name: "Latest content" }
+    ]);
+    expect(queue.state).toEqual({ status: "saved", savedRevision: 3 });
+  });
+
+  it("keeps a real revision conflict visible without retrying or overwriting external changes", async () => {
+    let calls = 0;
+    const queue = new ProjectAutosaveQueue(async () => {
+      calls++;
+      throw new ProjectRevisionConflictError("External revision changed");
+    }, 0);
+    const first = commitPixelProject(createPixelProject(), (draft) => { draft.name = "First"; });
+    queue.enqueue(first);
+    await queue.flush();
+    queue.retry();
+    queue.enqueue(commitPixelProject(first, (draft) => { draft.name = "Second"; }));
+    await queue.flush();
+    expect(calls).toBe(1);
+    expect(queue.state).toMatchObject({ status: "conflict", savedRevision: 0, pendingRevision: 2, error: "External revision changed" });
+  });
+
 });
