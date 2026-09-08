@@ -560,6 +560,88 @@ export function createPalettePixelPatch(
   return { kind: "palette-pixels", id: createDocumentId(base), ...base };
 }
 
+export interface EditItemResult {
+  index: number;
+  id?: string;
+  status: "applied" | "noop" | "failed" | "skipped" | "partial";
+  code?: string;
+  message?: string;
+  changedPixels?: number;
+}
+
+export interface RemapColorsOptions {
+  mappings: unknown[];
+  selectionOnly?: boolean;
+  targets?: Array<{ layerId: string; frameId: string }>;
+}
+
+export function createRemapColorsPatch(document: PixelDocument, options: RemapColorsOptions, reason: string): {
+  patch: DocumentPatch;
+  results: EditItemResult[];
+  changedPixels: number;
+} {
+  if (!Array.isArray(options.mappings) || options.mappings.length === 0 || options.mappings.length > 256) {
+    throw new Error("Provide between 1 and 256 color mappings.");
+  }
+  if (options.selectionOnly === true ? options.targets !== undefined : !options.targets?.length) {
+    throw new Error("Specify selectionOnly or explicit layer/frame targets, exclusively.");
+  }
+  const selection = options.selectionOnly ? document.selection : undefined;
+  if (options.selectionOnly && !selection) throw new Error("An active selection is required.");
+  const targets = selection ? [{ layerId: selection.layerId, frameId: selection.frameId }] : options.targets!;
+  const seenTargets = new Set<string>();
+  const buffers = targets.map((target) => {
+    const key = `${target.layerId}/${target.frameId}`;
+    if (seenTargets.has(key)) throw new Error("Duplicate remap target.");
+    seenTargets.add(key);
+    return { ...target, pixels: getPixels(document, target.layerId, target.frameId) };
+  });
+  const items = options.mappings.map((value) => value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {});
+  const counts = (key: string) => {
+    const values = new Map<unknown, number>();
+    for (const item of items) if (item[key] !== undefined) values.set(item[key], (values.get(item[key]) ?? 0) + 1);
+    return values;
+  };
+  const ids = counts("id"), sources = counts("fromColorIndex");
+  const next = structuredClone(document);
+  const colorIndices = new Map(next.palette.map((color, index) => [color.toLowerCase(), index]));
+  let changedPixels = 0;
+  const results: EditItemResult[] = items.map((item, index) => {
+    const id = typeof item.id === "string" ? item.id : undefined;
+    const result: EditItemResult = { index, ...(id ? { id } : {}), status: "failed" };
+    const fail = (code: string, message: string) => ({ ...result, code, message });
+    if (!id || id.length > 128) return fail("INVALID_ID", "A nonempty mapping ID of at most 128 characters is required.");
+    if (ids.get(id)! > 1) return fail("DUPLICATE_ID", "Mapping IDs must be unique.");
+    if (sources.get(item.fromColorIndex)! > 1) return fail("DUPLICATE_SOURCE", "A source color may be mapped only once.");
+    if (!Number.isInteger(item.fromColorIndex) || (item.fromColorIndex as number) < 0 || (item.fromColorIndex as number) >= document.palette.length) {
+      return fail("INVALID_SOURCE", "Source color index is outside the original palette.");
+    }
+    if (typeof item.toColor !== "string" || !/^#[0-9a-fA-F]{8}$/.test(item.toColor)) return fail("INVALID_COLOR", "Target color must be #RRGGBBAA.");
+    const color = item.toColor.toLowerCase();
+    const affected = buffers.map((buffer) => ({ ...buffer, indices: buffer.pixels.flatMap((pixel, pixelIndex) =>
+      pixel === item.fromColorIndex && (!selection || contains(selection, document.canvas.width, pixelIndex % document.canvas.width, Math.floor(pixelIndex / document.canvas.width)))
+        ? [pixelIndex] : []) }));
+    const count = affected.reduce((total, buffer) => total + buffer.indices.length, 0);
+    if (count === 0 || document.palette[item.fromColorIndex as number]!.toLowerCase() === color) return { ...result, status: "noop", changedPixels: 0 };
+    let toIndex = colorIndices.get(color);
+    if (toIndex === undefined) {
+      if (next.palette.length >= 256) return fail("PALETTE_FULL", "No palette slot remains for this color.");
+      toIndex = next.palette.length;
+      next.palette.push(color);
+      colorIndices.set(color, toIndex);
+    }
+    for (const buffer of affected) {
+      const pixels = getPixels(next, buffer.layerId, buffer.frameId);
+      for (const pixelIndex of buffer.indices) pixels[pixelIndex] = toIndex;
+    }
+    changedPixels += count;
+    return { ...result, status: "applied", changedPixels: count };
+  });
+  if (changedPixels > 0) next.contentBounds = computeDocumentContentBounds(next);
+  return { patch: createDocumentPatch(document, next, reason), results, changedPixels };
+}
+
 export function createDocumentPatch(
   document: PixelDocument,
   after: PixelDocument,

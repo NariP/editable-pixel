@@ -143,6 +143,43 @@ test("web and MCP isometric grid controls agree without changing document or his
   });
 });
 
+test("partial MCP batch updates the browser and Undo/Redo restores the entire successful subset", async ({ page, context, baseURL }) => {
+  await withParitySessions(page, context, baseURL, async ({ api, client, mcpId, mcpPage }) => {
+    await callTool(client, "set_selection", mcpId, { command: { type: "rect", x: 1, y: 1, width: 2, height: 2, mode: "replace" } });
+    const before = await api.getSession(mcpId);
+    const beforeImage = await canvasImage(mcpPage);
+    const previousHistory = (await api.getHistory(mcpId)).entries.length;
+    const result = await callTool<{ results: Array<{ status: string; items?: Array<{ id: string; code?: string }> }> }>(client, "use_editable_pixel", mcpId, {
+      base_revision: before.revision, reason: "Recolor and timing together", operations: [
+        { id: "colors", action: { type: "remap_colors", selection_only: true, mappings: [
+          { id: "accent", from_color_index: 1, to_color: "#abcdefFF" }, { id: "invalid-shade", from_color_index: 99, to_color: "#001122ff" }
+        ] } },
+        { id: "bad-action", action: { type: "not-an-action" } },
+        { id: "timing", action: { type: "set_frame_duration", frame_id: "frame-1", duration_ms: 120 } }
+      ]
+    });
+    expect(result.results.map((item) => item.status)).toEqual(["partial", "failed", "applied"]);
+    expect(result.results[0]!.items).toContainEqual(expect.objectContaining({ id: "invalid-shade", code: "INVALID_SOURCE" }));
+    const after = await api.getSession(mcpId);
+    const expectedPixels = [...before.document.layers[0]!.frames["frame-1"]!];
+    expectedPixels[7] = before.document.palette.length;
+    expect(after.document.layers[0]!.frames["frame-1"]).toEqual(expectedPixels);
+    expect(after.document.layers[0]!.frames["frame-2"]).toEqual(before.document.layers[0]!.frames["frame-2"]);
+    expect(after.document.layers[0]!.normalFrames).toEqual(before.document.layers[0]!.normalFrames);
+    expect(after.document.layers[1]).toEqual(before.document.layers[1]);
+    expect(after.document.frames[0]!.durationMs).toBe(120);
+    expect((await api.getHistory(mcpId)).entries).toHaveLength(previousHistory + 1);
+    await expect.poll(() => canvasImage(mcpPage)).not.toBe(beforeImage);
+    await mcpPage.getByRole("button", { name: "Undo" }).click();
+    await expect.poll(async () => (await api.getSession(mcpId)).document.layers).toEqual(before.document.layers);
+    expect((await api.getSession(mcpId)).document.frames).toEqual(before.document.frames);
+    await expect.poll(() => canvasImage(mcpPage)).toBe(beforeImage);
+    await mcpPage.getByRole("button", { name: "Redo" }).click();
+    await expect.poll(async () => (await api.getSession(mcpId)).document.layers).toEqual(after.document.layers);
+    expect((await api.getSession(mcpId)).document.frames).toEqual(after.document.frames);
+  });
+});
+
 function parityDocument(): PixelDocument {
   const document = createPixelDocument({
     id: "color-move-parity",

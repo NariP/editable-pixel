@@ -36,6 +36,8 @@ editable-pixel open ./robot-pack.pixel-project.json --host claude
 
 Codex can open the returned one-time URL in its in-app browser. Claude uses the system browser. The URL token is exchanged for a session token and removed from browser history.
 
+For a built workspace, the private MCP executable entry is `node packages/pixel-mcp/dist/stdio.js`. `packages/pixel-mcp/dist/index.js` is a side-effect-free library export. The installed `editable-pixel-mcp` command is unchanged and starts exactly one stdio server.
+
 ## Figma-inspired context flow
 
 The default flow keeps large pixel arrays out of the initial prompt:
@@ -108,6 +110,57 @@ The connected editor can switch between square and 2:1 isometric guides through 
 - Project: rename
 
 Each action requires a concise `reason`. The server validates the action, current target, Selection, palette, schema, and revision; applies one transaction; records actor=`ai`; persists writable files; and broadcasts the resulting document to the browser. Use `undo` instead of an approval gate when a result should be reverted.
+
+## One-call batches and color remapping
+
+Read `get_metadata` and focused palette/design context once, plan all changes, then send one `use_editable_pixel` request. Existing single `action` requests remain supported. Supply `base_revision` for every new batch or `remap_colors` call; stale revisions fail the whole request before any change.
+
+Recolor many shades without separate palette-add/replace calls:
+
+```json
+{
+  "session_id": "YOUR_SESSION_ID",
+  "base_revision": 12,
+  "reason": "Shift both selected shades to blue",
+  "action": {
+    "type": "remap_colors",
+    "selection_only": true,
+    "mappings": [
+      { "id": "dark", "from_color_index": 3, "to_color": "#123456ff" },
+      { "id": "light", "from_color_index": 4, "to_color": "#abcdefFF" }
+    ]
+  },
+  "response_format": "json"
+}
+```
+
+Use the current exact selection (including mask holes), or replace `selection_only` with `targets: [{"layer_id":"artwork","frame_id":"frame-1"}]` to explicitly recolor those **whole** layer/frame buffers. These modes are exclusive. Explicit targets do not inherit an unrelated active selection; choose them only for a requested whole-frame/layer edit. Other buffers remain unchanged. Mappings read original pixels within that remap action, so A→B/B→C and swaps never cascade. Target RGBA values reuse palette entries; new colors are added only for successful mappings that affect pixels. The palette remains capped at 256.
+
+For mixed edits, replace `action` with an ordered operations array:
+
+```json
+{
+  "session_id": "YOUR_SESSION_ID",
+  "base_revision": 12,
+  "reason": "Adjust the frame and its label",
+  "operations": [
+    { "id": "timing", "action": { "type": "set_frame_duration", "frame_id": "frame-1", "duration_ms": 120 } },
+    { "id": "label", "depends_on": ["timing"], "action": { "type": "rename_frame", "frame_id": "frame-1", "name": "Idle" } }
+  ]
+}
+```
+
+Each item is validated independently. Invalid nested actions do not reject valid peers. Dependencies must name earlier successful/noop items; missing, forward, failed, or partial dependencies are skipped. Duplicate operation IDs fail; duplicate mapping IDs or source indices fail every conflicting mapping. Operations and mappings each allow 1–256 items. Project/Clip and document edits can share the same batch when a Project exists.
+
+The successful subset commits once, broadcasts once, and is restored by one Undo/Redo step. An all-failed/noop or net-zero batch creates no revision or History entry. Operations execute in order; separate remap operations see the preceding operation's result. Only the mappings *within one remap* share its frozen original pixels.
+
+Mutation results are compact in **both** text and `structuredContent.data`: session/revision, target summary, `baseRevision`, `committed`, `changedPixels`, and per-operation `results`. Item statuses are `applied`, `noop`, `partial`, `failed`, or `skipped`; mapping results are nested in `items`. Each result includes its input `index`, valid `id`, and failure `code`/`message` where applicable. Operation targets distinguish selection, explicit buffers, and Project actions. `changedPixels` counts final changed pixel indices, not palette-only or timing changes. Selection and Undo/Redo return compact current target/revision summaries; selection masks report their count, not their index arrays.
+
+Retry only failed mappings/items after reading the new revision and checking their dependencies. IDs correlate results; they do **not** provide exactly-once network replay. Authentication and stale-base failures remain request-level errors. Existing single-action clients may omit `base_revision`; the MCP adapter captures a revision before committing, so concurrent changes still reject rather than overwrite.
+
+### Response compatibility
+
+MCP mutation responses no longer embed `document`, pixel/normal buffers, or full session snapshots. Consumers that relied on them should read `get_metadata`, `get_palette_context`, or focused `get_design_context` as needed. The HTTP session API and browser WebSocket snapshots remain full. Legacy `create_patch` still returns the patch needed by `preview_patch`; preview responses now return only patch ID/revision/target/change count, while the full preview stays in the browser. No new MCP tool was added.
 
 ## Import, Convert, and Export boundary
 

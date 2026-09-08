@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": { "editable-pixel-mcp": "./dist/index.js" },
+  "bin": { "editable-pixel-mcp": "./dist/stdio.js" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {

@@ -1,13 +1,10 @@
-#!/usr/bin/env node
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Patch } from "@editable-pixel/core";
-import type { EditablePixelAction, SelectionCommand, WebControlCommand, WebImportFile } from "@editable-pixel/server";
+import type { SessionSnapshot, SelectionCommand, WebControlCommand, WebImportFile } from "@editable-pixel/server";
 import { ClientError, PixelServerClient } from "@editable-pixel/server/client";
 import { McpServer } from "@modelcontextprotocol/server";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 
 import { packageVersion } from "./version.js";
@@ -81,6 +78,12 @@ const lightingSchema = z.object({
   toonSteps: z.number().int().min(3).max(6).optional()
 }).strict();
 const editActionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("remap_colors"),
+    mappings: z.array(z.unknown()).min(1).max(256).describe("Items: {id, from_color_index, to_color: '#RRGGBBAA'}. Invalid items fail independently; duplicate sources conflict."),
+    selection_only: z.literal(true).optional(),
+    targets: z.array(z.object({ layer_id: z.string().min(1), frame_id: z.string().min(1) }).strict()).min(1).max(256).optional()
+  }).strict(),
   z.object({
     type: z.literal("paint_pixels"),
     pixels: z.array(coordinate.extend({ color_index: z.number().int().min(0).max(255) })).min(1).max(100_000),
@@ -354,7 +357,7 @@ export function createEditablePixelMcpServer(
     const normalized = normalizeSelectionCommand(command) as SelectionCommand;
     const data = await client.setSelectionCommand(session_id, normalized);
     return result(
-      data,
+      compactMutation(data),
       response_format,
       data.selection
         ? `Selected ${data.selection.type} at ${data.selection.x},${data.selection.y} ${data.selection.width}×${data.selection.height}. Revision ${data.revision}.`
@@ -364,26 +367,36 @@ export function createEditablePixelMcpServer(
 
   server.registerTool("use_editable_pixel", {
     title: "Use Editable Pixel",
-    description: "Immediately apply one validated Pixel, Palette, Layer, Frame, Clip, Normal, Lighting, or Project action. The edit is broadcast to the browser and recorded as actor=ai in the shared Undo/Redo History.",
+    description: "Apply one action or a partial-success operations batch in one shared Undo step. Prefer remap_colors for multiple shades: frozen original pixels, explicit selection or layer/frame targets. Results identify failures for retry. New batches/remaps require base_revision from context.",
     inputSchema: z.object({
       session_id: sessionId,
       reason: z.string().min(1).max(500),
-      action: editActionSchema,
+      base_revision: z.number().int().min(0).optional(),
+      action: editActionSchema.optional(),
+      operations: z.array(z.unknown()).min(1).max(256).optional().describe("Ordered items: {id, depends_on?: [earlier IDs], action}. Each item is independently validated; successful subset commits once."),
       response_format: responseFormat
-    }).strict(),
+    }).strict().superRefine((input, context) => {
+      if (Boolean(input.action) === Boolean(input.operations)) context.addIssue({ code: "custom", message: "Specify action or operations exclusively." });
+      if ((input.operations || input.action?.type === "remap_colors") && input.base_revision === undefined) context.addIssue({ code: "custom", message: "Batch/remap requires base_revision." });
+    }),
     outputSchema: universalOutput,
     annotations: writeAnnotations
-  }, async ({ session_id, reason, action, response_format }) => tool(async () => {
-    const data = await (await connect()).executeAction(
-      session_id,
-      normalizeEditAction(action) as EditablePixelAction,
-      reason
-    );
-    return result(
-      data,
-      response_format,
-      `Applied ${action.type} immediately as an AI edit. Document revision is now ${data.revision}; use undo to revert.`
-    );
+  }, async ({ session_id, reason, action, operations, base_revision, response_format }) => tool(async () => {
+    const client = await connect();
+    const items = operations ?? [{ id: "action", action }];
+    const normalized = items.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const item = value as Record<string, unknown>;
+      const parsed = editActionSchema.safeParse(item.action);
+      return { id: item.id, ...(item.depends_on !== undefined ? { dependsOn: item.depends_on } : {}),
+        ...(parsed.success ? { action: normalizeEditAction(parsed.data) } : { validationError: parsed.error.message.slice(0, 500) }) };
+    });
+    const base = base_revision ?? (await client.getSession(session_id)).revision;
+    const data = await client.executeBatch(session_id, normalized, reason, base);
+    const failure = data.mutation?.results[0];
+    if (action && action.type !== "remap_colors" && failure?.status === "failed") throw new ClientError(failure.code ?? "ACTION_INVALID", failure.message ?? "The action could not be applied.");
+    const compact = compactMutation(data);
+    return result(compact, response_format, JSON.stringify(compact));
   }));
 
   server.registerTool("get_web_context", {
@@ -607,7 +620,8 @@ export function createEditablePixelMcpServer(
     annotations: readOnlyAnnotations
   }, async ({ session_id, patch, response_format }) => tool(async () => {
     const data = await (await connect()).previewPatch(session_id, patch as unknown as Patch);
-    return result(data, response_format, `Patch ${data.patch.id} is visible in the web editor for review. Apply it only after the user's explicit instruction.`);
+    const summary = { sessionId: session_id, patchId: data.patch.id, revision: data.patch.baseRevision, target: data.patch.kind === "document" ? "document" : { layerId: data.patch.layerId, frameId: data.patch.frameId }, changedPixels: data.patch.kind === "document" ? undefined : data.patch.changes.length };
+    return result(summary, response_format, `Patch ${data.patch.id} is visible in the web editor for review. Apply it only after the user's explicit instruction.`);
   }));
 
   server.registerTool("apply_patch", {
@@ -618,7 +632,7 @@ export function createEditablePixelMcpServer(
     annotations: writeAnnotations
   }, async ({ session_id, patch_id, response_format }) => tool(async () => {
     const data = await (await connect()).applyPatch(session_id, patch_id);
-    return result(data, response_format, `Applied patch ${patch_id}. Document revision is now ${data.revision}.`);
+    return result(compactMutation(data), response_format, `Applied patch ${patch_id}. Document revision is now ${data.revision}.`);
   }));
 
   server.registerTool("reject_patch", {
@@ -629,7 +643,7 @@ export function createEditablePixelMcpServer(
     annotations: writeAnnotations
   }, async ({ session_id, patch_id, response_format }) => tool(async () => {
     const data = await (await connect()).rejectPatch(session_id, patch_id);
-    return result(data, response_format, `Rejected patch ${patch_id}. Revision remains ${data.revision}.`);
+    return result(compactMutation(data), response_format, `Rejected patch ${patch_id}. Revision remains ${data.revision}.`);
   }));
 
   for (const action of ["undo", "redo"] as const) {
@@ -643,7 +657,7 @@ export function createEditablePixelMcpServer(
       const data = action === "undo"
         ? await (await connect()).undo(session_id)
         : await (await connect()).redo(session_id);
-      return result(data, response_format, `${action === "undo" ? "Undo" : "Redo"} complete. Revision ${data.revision}.`);
+      return result(compactMutation(data), response_format, `${action === "undo" ? "Undo" : "Redo"} complete. Revision ${data.revision}.`);
     }));
   }
 
@@ -808,6 +822,15 @@ function normalizeEditAction(action: Record<string, unknown>): Record<string, un
       return value;
     });
   }
+  if (Array.isArray(normalized.mappings)) normalized.mappings = normalized.mappings.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const item = value as Record<string, unknown>;
+    return { id: item.id, fromColorIndex: item.from_color_index, toColor: item.to_color };
+  });
+  if (Array.isArray(normalized.targets)) normalized.targets = normalized.targets.map((value) => {
+    const target = value as { layer_id: string; frame_id: string };
+    return { layerId: target.layer_id, frameId: target.frame_id };
+  });
   return normalized;
 }
 
@@ -898,6 +921,19 @@ function webImportMime(path: string): string {
   throw new Error(`Unsupported import format: ${extension || "no extension"}. Use PNG, WebP, JPEG, Pixel JSON, or Pixel Project JSON.`);
 }
 
+function compactMutation(data: SessionSnapshot) {
+  const selection = data.selection;
+  return {
+    sessionId: data.id,
+    revision: data.revision,
+    target: data.mutation ? { scope: "operations" } : selection ? { layerId: selection.layerId, frameId: selection.frameId, selection: {
+      type: selection.type, x: selection.x, y: selection.y, width: selection.width, height: selection.height,
+      selectedPixels: selection.type === "mask" ? selection.indices.length : selection.width * selection.height
+    } } : { layerId: data.projectContext?.layerId ?? data.document.layers[0]?.id, frameId: data.projectContext?.frameId ?? data.document.frames[0]?.id },
+    ...(data.mutation ? data.mutation : {})
+  };
+}
+
 function result(data: unknown, format: ResponseFormat, markdown: string) {
   return {
     content: [{ type: "text" as const, text: format === "json" ? JSON.stringify(data, null, 2) : markdown }],
@@ -927,10 +963,4 @@ async function tool<T>(operation: () => Promise<T>): Promise<T | {
       structuredContent: { data }
     };
   }
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  serveStdio(() => createEditablePixelMcpServer(), {
-    onerror: (error) => console.error(`Editable Pixel MCP error: ${error.message}`)
-  });
 }

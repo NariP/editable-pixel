@@ -186,7 +186,110 @@ describe("Editable Pixel MCP", () => {
   });
 });
 
-async function createHarness(width = 2, height = 2) {
+describe("compact partial MCP transactions", () => {
+  it("changes sixteen shades in one call, protects 2687 cells, and restores all 1409 cells with one Undo/Redo", async () => {
+    const palette = ["#00000000", ...Array.from({ length: 16 }, (_, index) => `#${(index + 1).toString(16).padStart(2, "0")}0000ff`)];
+    const pixels = Array.from({ length: 4096 }, (_, index) => index >= 1409 && index % 5 === 0 ? 0 : index % 16 + 1);
+    const document = createPixelDocument({ width: 64, height: 64, palette, pixels });
+    document.selection = { type: "mask", layerId: "artwork", frameId: "frame-1", x: 0, y: 0, width: 64, height: 23, indices: Array.from({ length: 1409 }, (_, index) => index) };
+    const harness = await createHarness(64, 64, document);
+    const result = await harness.mcpClient.callTool({ name: "use_editable_pixel", arguments: {
+      session_id: harness.sessionId, reason: "All sixteen shades", base_revision: 0,
+      action: { type: "remap_colors", selection_only: true, mappings: palette.slice(1).map((_, index) => ({ id: `shade-${index}`, from_color_index: index + 1, to_color: `#00${(index + 1).toString(16).padStart(2, "0")}00ff` })) }, response_format: "json"
+    } }) as CallToolResult;
+    expect(result.isError).not.toBe(true);
+    const summary = (result.structuredContent as { data: { committed: boolean; changedPixels: number; revision: number } }).data;
+    expect(summary).toMatchObject({ committed: true, changedPixels: 1409, revision: 1 });
+    const next = harness.server.store.get(harness.sessionId).document;
+    expect(next.layers[0]!.frames["frame-1"]!.slice(1409)).toEqual(pixels.slice(1409));
+    for (let index = 0; index < 1409; index++) expect(next.palette[next.layers[0]!.frames["frame-1"]![index]!]!).toBe(`#00${(index % 16 + 1).toString(16).padStart(2, "0")}00ff`);
+    expect(harness.server.store.getHistory(harness.sessionId).entries).toHaveLength(1);
+    for (const name of ["undo", "redo"]) {
+      const response = await harness.mcpClient.callTool({ name, arguments: { session_id: harness.sessionId, response_format: "json" } }) as CallToolResult;
+      expect(response.isError).not.toBe(true);
+      expect(JSON.stringify(response)).not.toMatch(/"(document|pixels|normalFrames|indices)":/);
+      expect(harness.server.store.get(harness.sessionId).document.layers).toEqual(name === "undo" ? document.layers : next.layers);
+      expect(harness.server.store.get(harness.sessionId).document.palette).toEqual(name === "undo" ? document.palette : next.palette);
+    }
+    await harness.close();
+  });
+
+  it("lets invalid nested items reach partial validation and reports failed mapping IDs", async () => {
+    const harness = await createHarness();
+    const response = await harness.mcpClient.callTool({ name: "use_editable_pixel", arguments: {
+      session_id: harness.sessionId, reason: "Partial items", base_revision: 0,
+      operations: [
+        { id: "invalid", action: { type: "set_frame_duration", duration_ms: "wrong" } },
+        { id: "dependent", depends_on: ["invalid"], action: { type: "rename_frame", frame_id: "frame-1", name: "Skip" } },
+        { id: "good", action: { type: "set_frame_duration", frame_id: "frame-1", duration_ms: 120 } },
+        { id: "colors", action: { type: "remap_colors", targets: [{ layer_id: "artwork", frame_id: "frame-1" }], mappings: [{ id: "bad-color", from_color_index: 1, to_color: "wrong" }] } }
+      ]
+    } }) as CallToolResult;
+    expect(response.isError).not.toBe(true);
+    const data = (response.structuredContent as { data: { results: Array<{ id: string; status: string; items?: Array<{ id: string; code: string }> }> } }).data;
+    expect(data.results.map((item) => item.status)).toEqual(["failed", "skipped", "applied", "failed"]);
+    expect(data.results[3]!.items).toEqual([expect.objectContaining({ id: "bad-color", code: "INVALID_COLOR" })]);
+    expect(harness.server.store.get(harness.sessionId).document.frames[0]!.durationMs).toBe(120);
+    const stale = await harness.mcpClient.callTool({ name: "use_editable_pixel", arguments: {
+      session_id: harness.sessionId, reason: "Stale", base_revision: 0, operations: [{ id: "x", action: { type: "erase_selection" } }]
+    } }) as CallToolResult;
+    expect(stale.isError).toBe(true);
+    expect(JSON.stringify(stale)).toContain("REVISION_CONFLICT");
+    await harness.close();
+  });
+
+  it("keeps timing, selection and history mutation outputs free of document buffers in text and structured content", async () => {
+    for (const format of [undefined, "json"] as const) {
+      const sizes: number[] = [];
+      const responseFormat = format ? { response_format: format } : {};
+      for (const size of [64, 128]) {
+        const harness = await createHarness(size, size);
+        const changed = await harness.mcpClient.callTool({ name: "use_editable_pixel", arguments: {
+          session_id: harness.sessionId, reason: "Timing", action: { type: "set_frame_duration", frame_id: "frame-1", duration_ms: 120 }, ...responseFormat
+        } }) as CallToolResult;
+        sizes.push(JSON.stringify(changed).length);
+        assertCompactMutation(changed, true);
+        const selected = await harness.mcpClient.callTool({ name: "set_selection", arguments: {
+          session_id: harness.sessionId, command: { type: "pixels", pixels: [{ x: 0, y: 0 }, { x: 2, y: 0 }] }, ...responseFormat
+        } }) as CallToolResult;
+        assertCompactMutation(selected, format === "json");
+        for (const name of ["undo", "redo"]) {
+          const result = await harness.mcpClient.callTool({ name, arguments: { session_id: harness.sessionId, ...responseFormat } }) as CallToolResult;
+          assertCompactMutation(result, format === "json");
+        }
+        await harness.close();
+      }
+      expect(Math.abs(sizes[1]! - sizes[0]!)).toBeLessThan(32);
+    }
+  });
+});
+
+function assertCompactMutation(result: CallToolResult, jsonText: boolean): void {
+  expect(result.isError).not.toBe(true);
+  const inspect = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      expect(["document", "pixels", "normalFrames", "indices", "layers"], `Unexpected buffer field ${key}`).not.toContain(key);
+      inspect(child);
+    }
+  };
+  expect(result.structuredContent).toHaveProperty("data.revision");
+  inspect(result.structuredContent);
+  const texts = result.content.filter((item) => item.type === "text");
+  expect(texts).toHaveLength(1);
+  for (const item of texts) {
+    if (jsonText) {
+      const decoded: unknown = JSON.parse(item.text);
+      expect(decoded).toHaveProperty("revision");
+      inspect(decoded);
+    } else {
+      expect(item.text.length).toBeLessThan(512);
+      expect(item.text).not.toMatch(/"(?:document|pixels|normalFrames|indices|layers)"\s*:/);
+    }
+  }
+}
+
+async function createHarness(width = 2, height = 2, document = createPixelDocument({ width, height })) {
   const server = await startPixelServer();
   running.push(server);
   const apiClient = new PixelServerClient({
@@ -195,7 +298,7 @@ async function createHarness(width = 2, height = 2) {
     daemonToken: server.daemonToken,
     startedAt: new Date().toISOString()
   });
-  const created = await apiClient.createSession({ document: createPixelDocument({ width, height }) });
+  const created = await apiClient.createSession({ document });
   const mcpServer = createEditablePixelMcpServer(async () => apiClient);
   const mcpClient = new Client({ name: "editable-pixel-test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

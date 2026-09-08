@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer, request as httpRequest } from "node:http";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -20,6 +21,7 @@ const installer = resolve("install.sh");
 const environment = { ...process.env, EDITABLE_PIXEL_REGISTRY: registry };
 let daemonPid;
 let mcpClient;
+let mcpProxy;
 
 try {
   await mkdir(packDirectory);
@@ -154,8 +156,35 @@ try {
   ], { env: environment })).stdout);
   if (restoredSelection.selection !== null) throw new Error("Installed CLI diamond selection did not share Undo.");
 
+  const daemonRegistry = JSON.parse(await readFile(registry, "utf8"));
+  let actionRequests = 0;
+  mcpProxy = createServer((request, response) => {
+    if (request.method === "POST" && request.url.endsWith("/actions")) actionRequests++;
+    const outgoing = httpRequest({
+      hostname: "127.0.0.1", port: daemonRegistry.port, path: request.url, method: request.method,
+      headers: { ...request.headers, host: `127.0.0.1:${daemonRegistry.port}` }
+    }, (incoming) => {
+      response.writeHead(incoming.statusCode, incoming.headers);
+      incoming.pipe(response);
+    });
+    outgoing.on("error", () => { response.writeHead(502); response.end(); });
+    request.pipe(outgoing);
+  });
+  await new Promise((resolve, reject) => {
+    mcpProxy.once("error", reject);
+    mcpProxy.listen(0, "127.0.0.1", resolve);
+  });
+  const mcpRegistry = join(temporary, "mcp-registry.json");
+  await writeFile(mcpRegistry, JSON.stringify({ ...daemonRegistry, port: mcpProxy.address().port }), { mode: 0o600 });
+  const readSessionState = async (suffix = "") => {
+    const response = await fetch(`http://127.0.0.1:${daemonRegistry.port}/api/sessions/${blank.sessionId}${suffix}`, {
+      headers: { Authorization: `Bearer ${daemonRegistry.daemonToken}` }
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
   mcpClient = new Client({ name: "distribution-smoke", version: "1.0.0" });
-  const transport = new StdioClientTransport({ command: mcp, env: environment, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: mcp, env: { ...environment, EDITABLE_PIXEL_REGISTRY: mcpRegistry }, stderr: "pipe" });
   transport.stderr?.on("data", () => {});
   await mcpClient.connect(transport);
   assert.equal(mcpClient.getServerVersion().version, packageManifest.version);
@@ -166,8 +195,28 @@ try {
   const sessions = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
   assert.notEqual(sessions.isError, true);
   assert.ok(JSON.stringify(sessions).includes(blank.sessionId), "MCP must connect to the same CLI daemon.");
+  const beforeMutation = await readSessionState();
+  const beforeHistory = await readSessionState("/history");
+  const mutation = await mcpClient.callTool({ name: "use_editable_pixel", arguments: {
+    session_id: blank.sessionId, base_revision: beforeMutation.revision, reason: "Installed stdio single dispatch",
+    action: { type: "set_frame_duration", frame_id: beforeMutation.document.frames[0].id, duration_ms: 160 }, response_format: "json"
+  } });
+  assert.notEqual(mutation.isError, true, "Installed mutation must return success, not a duplicate-dispatch conflict.");
+  await mcpClient.callTool({ name: "get_metadata", arguments: { session_id: blank.sessionId } });
+  const afterMutation = await readSessionState();
+  const afterHistory = await readSessionState("/history");
+  assert.equal(afterMutation.revision, beforeMutation.revision + 1);
+  assert.equal(afterMutation.document.frames[0].durationMs, 160);
+  assert.equal(afterHistory.entries.filter(({ state }) => state === "applied").length,
+    beforeHistory.entries.filter(({ state }) => state === "applied").length + 1);
   await mcpClient.close();
   mcpClient = undefined;
+  await new Promise((resolve) => mcpProxy.close(resolve));
+  mcpProxy = undefined;
+  assert.equal(actionRequests, 1, "One installed MCP call must issue exactly one HTTP action request.");
+  assert.deepEqual(await readSessionState(), afterMutation, "No delayed duplicate mutation may change the session after stdio closes.");
+  assert.deepEqual(await readSessionState("/history"), afterHistory);
+
   await execFile(cli, ["session", "close", opened.sessionId], { env: environment });
   await execFile(cli, ["session", "close", concurrent.sessionId], { env: environment });
   await execFile(cli, ["session", "close", blank.sessionId], { env: environment });
@@ -181,6 +230,7 @@ try {
   process.stdout.write(`Distribution install, update, execution, and removal passed (archive SHA256 fingerprint: ${checksum.slice(0, 12)}…).\n`);
 } finally {
   await mcpClient?.close();
+  if (mcpProxy) await new Promise((resolve) => mcpProxy.close(resolve));
   await stopDaemon();
   await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
