@@ -231,6 +231,7 @@ export function App() {
   }), [initialDocument]);
   const [project, setProject] = useState(initialProject);
   const projectRef = useRef(project);
+  const pristineDocumentRevisionRef = useRef(0);
   const [pixelDocument, setPixelDocument] = useState(initialDocument);
   const documentRef = useRef(pixelDocument);
   const historyRef = useRef(new PatchHistory());
@@ -435,7 +436,9 @@ export function App() {
     } else {
       replaceDocument(next, !initialHydration && !purpose && (externalEdit || !sameEditableContent(current, next)));
     }
-    setNotice(`Session synced at revision ${next.revision}.`);
+    if (!projectChanged || initialHydration || next.revision !== current.revision) {
+      setNotice(`Session synced at revision ${next.revision}.`);
+    }
   }, [replaceDocument, setKeyboardTarget]));
   sessionPersistenceRef.current = { status: session.status, ...(session.token ? { token: session.token } : {}) };
   const sessionSendPatchRef = useRef(session.sendPatch);
@@ -1275,21 +1278,30 @@ export function App() {
     setIsImporting(true);
     setNotice(`Splitting ${file.name} into ${columns * rows} frames…`);
     try {
+      const importProject = projectRef.current;
+      const currentDocument = documentRef.current;
+      const replaceInitialFrame = isPristineSpriteImport(importProject, pristineDocumentRevisionRef.current);
       const tiles = await splitSpriteSheet(file, columns, rows);
-      const settings = {
+      const settings = replaceInitialFrame ? draftSettings : {
         ...draftSettings,
-        canvasWidth: pixelDocument.canvas.width,
-        canvasHeight: pixelDocument.canvas.height,
-        colorCount: pixelDocument.palette.length,
-        palette: [...pixelDocument.palette]
+        canvasWidth: currentDocument.canvas.width,
+        canvasHeight: currentDocument.canvas.height,
+        colorCount: currentDocument.palette.length,
+        palette: [...currentDocument.palette]
       };
       const results = await convertFiles(tiles, settings, sessionId, session.token);
       const frameIds = results.map(() => `frame-${crypto.randomUUID()}`);
-      const next = appendFrameDocuments(documentRef.current, results.map((result) => result.document), frameIds);
+      const next = replaceInitialFrame
+        ? mergeFrameDocuments(results.map((result) => result.document), frameIds)
+        : appendFrameDocuments(currentDocument, results.map((result) => result.document), frameIds);
       const sourceId = `source-${crypto.randomUUID()}`;
       const createdAt = new Date().toISOString();
       const sourceMetadata = await createEmbeddedProjectSource(file, "sprite-sheet", sourceId, createdAt);
       sourceMetadata.frames = await createEmbeddedProjectSourceFrames(tiles, frameIds);
+      if (projectRef.current.id !== importProject.id || projectRef.current.revision !== importProject.revision
+        || documentRef.current.revision !== currentDocument.revision) {
+        throw new Error("The project changed while the sprite sheet was importing. Your edits were kept. Import the sheet again.");
+      }
       const runtime: SourceAsset = {
         id: sourceId,
         name: file.name,
@@ -1449,7 +1461,8 @@ export function App() {
     incomingSources: SourceAsset[],
     savedRevision: number,
     persistAsNew: boolean,
-    message: string
+    message: string,
+    pristine = false
   ) => {
     const currentSaveState = await autosaveRef.current?.flush();
     if (currentSaveState && currentSaveState.status !== "saved") {
@@ -1464,6 +1477,7 @@ export function App() {
       ? nextProject.active!.layerId!
       : nextProject.document.layers[0]!.id;
 
+    let loadPatch: Patch | undefined;
     if (sessionId) {
       if (session.status !== "connected") throw new Error("Wait for the local session to reconnect before opening another project.");
       const patch = createDocumentPatch(documentRef.current, nextProject.document, `Open ${nextProject.name}`);
@@ -1472,8 +1486,7 @@ export function App() {
       nextFrameId = patch.after.frames.some((frame) => frame.id === nextFrameId) ? nextFrameId : patch.after.frames[0]!.id;
       nextLayerId = patch.after.layers.some((layer) => layer.id === nextLayerId) ? nextLayerId : patch.after.layers[0]!.id;
       nextClip = nextProject.clips.find((clip) => clip.id === nextClip.id) ?? nextProject.clips[0]!;
-      sessionDocumentPurposeRef.current = "load";
-      session.sendPatch(patch, webCommandActorRef.current);
+      loadPatch = patch;
     }
 
     nextProject.active = {
@@ -1481,8 +1494,16 @@ export function App() {
       frameId: nextFrameId,
       layerId: nextLayerId
     };
+    if (!persistAsNew) nextProject = commitPixelProject(nextProject, () => {});
+    const firstSource = incomingSources[0];
+    const nextSettings = settingsFromDocument(nextProject.document, defaultSettings);
+    if (loadPatch) {
+      sessionDocumentPurposeRef.current = "load";
+      session.sendPatch(loadPatch, webCommandActorRef.current);
+    }
     for (const source of sourcesRef.current) revokeSourceUrls(source);
     historyRef.current = new PatchHistory();
+    pristineDocumentRevisionRef.current = pristine ? nextProject.document.revision : -1;
     projectRef.current = nextProject;
     documentRef.current = nextProject.document;
     activeIdsRef.current = incomingSources[0] ? { sourceId: incomingSources[0].id } : {};
@@ -1491,9 +1512,7 @@ export function App() {
     setActiveFrameId(nextFrameId);
     setActiveLayerId(nextLayerId);
     setSources(incomingSources);
-    const firstSource = incomingSources[0];
     setActiveSourceId(firstSource?.id);
-    const nextSettings = settingsFromDocument(nextProject.document, defaultSettings);
     setDraftSettings(nextSettings);
     setCustomCanvas(!(nextSettings.canvasWidth === nextSettings.canvasHeight && standardCanvasSizes.includes(nextSettings.canvasWidth)));
     setInspectorTab("convert");
@@ -1501,31 +1520,32 @@ export function App() {
     setPlaying(false);
     setKeyboardTarget("canvas");
 
+    sourcesRef.current = incomingSources;
+    draftSettingsRef.current = nextSettings;
+    activeSourceIdRef.current = firstSource?.id;
+    inspectorTabRef.current = "convert";
     const queue = configureAutosave(persistAsNew ? -1 : savedRevision);
-    const snapshot = createWorkspaceSnapshot(
-      nextProject,
-      nextSettings,
-      incomingSources,
-      firstSource?.id,
-      "convert",
-      persistAsNew ? -1 : savedRevision
-    );
-    await saveWorkspace(workspaceKey, snapshot);
-    await saveWorkspace(`project:${nextProject.id}`, snapshot);
-    if (persistAsNew) queue.enqueue(nextProject);
+    queue.enqueue(nextProject);
     setNotice(message);
   };
 
   const createNewProject = async (name: string) => {
     const next = createPixelProject({ name, width: defaultSettings.canvasWidth, height: defaultSettings.canvasHeight });
-    await activateProject(next, [], -1, true, `Created ${next.name}. Changes will save automatically.`);
+    await activateProject(next, [], -1, true, `Created ${next.name}. Changes will save automatically.`, true);
   };
 
   const openProjectFile = async (file: File) => {
     if (file.size > 64 * 1024 * 1024) throw new Error("Project files must be 64MB or smaller.");
     const next = parsePixelProject(new TextDecoder().decode(await readBlobBytes(file)));
+    const saveState = await autosaveRef.current?.flush();
+    if (saveState && saveState.status !== "saved") throw new Error("Resolve the current project save error before opening a project file.");
+    const known = await loadWorkspace(`project:${next.id}`);
+    const savedRevision = known?.savedRevision ?? known?.project.revision;
+    if (savedRevision !== undefined && savedRevision !== next.revision) {
+      throw new Error(`Project file revision ${next.revision} differs from the saved revision ${savedRevision}. Open the recent project to keep its latest changes.`);
+    }
     const restored = await restoreEmbeddedProjectSources(next);
-    await activateProject(next, restored, -1, true, `Opened ${next.name} from ${file.name}.`);
+    await activateProject(next, restored, savedRevision ?? -1, savedRevision === undefined, `Opened ${next.name} from ${file.name}.`);
   };
 
   const openRecentProject = async (projectId: string) => {
@@ -3852,7 +3872,15 @@ export function resolveCanvasOnionSkin(
   };
 }
 
-function appendFrameDocuments(document: PixelDocument, frames: PixelDocument[], frameIds: string[]): PixelDocument {
+export function isPristineSpriteImport(project: PixelProject, initialDocumentRevision = 0): boolean {
+  const document = project.document;
+  return project.revision === 0 && document.revision === initialDocumentRevision && project.sources.length === 0
+    && document.frames.length === 1 && document.layers.length === 1
+    && !document.layers[0]!.normalFrames
+    && document.layers[0]!.frames[document.frames[0]!.id]!.every((pixel) => pixel === document.transparentColorIndex);
+}
+
+export function appendFrameDocuments(document: PixelDocument, frames: PixelDocument[], frameIds: string[]): PixelDocument {
   const next = structuredClone(document);
   const pixelCount = next.canvas.width * next.canvas.height;
   frames.forEach((frameDocument, index) => {

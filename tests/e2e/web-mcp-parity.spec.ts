@@ -1,4 +1,5 @@
 import { createPixelDocument, NEUTRAL_NORMAL, type PixelDocument, type Selection } from "@editable-pixel/document";
+import { encodePng } from "@editable-pixel/image-codec";
 import { createEditablePixelMcpServer } from "@editable-pixel/mcp";
 import { PixelServerClient } from "@editable-pixel/server/client";
 import { Client, InMemoryTransport, type CallToolResult } from "@modelcontextprotocol/client";
@@ -170,6 +171,95 @@ function parityDocument(): PixelDocument {
   });
   return document;
 }
+
+test("UI and MCP reopen independent projects without reload or save conflicts", async ({ page, context, baseURL }) => {
+  await withParitySessions(page, context, baseURL, async ({ api, client, webId, mcpId, mcpPage, fixture }) => {
+    for (const [browser, sessionId, useMcp] of [[page, webId, false], [mcpPage, mcpId, true]] as const) {
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.id).toBeTruthy();
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByRole("textbox", { name: "Project name", exact: true }).fill(`Original ${useMcp ? "MCP" : "UI"}`);
+      await browser.getByRole("textbox", { name: "Project name", exact: true }).press("Enter");
+      await browser.keyboard.press("Escape");
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.name).toBe(`Original ${useMcp ? "MCP" : "UI"}`);
+      const beforeSourceRevision = (await api.getSession(sessionId)).project!.revision;
+      const source = Buffer.from(await encodePng({ width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) }));
+      await browser.locator('input[type="file"]').setInputFiles({ name: "original-source.png", mimeType: "image/png", buffer: source });
+      await browser.getByRole("button", { name: /Add Source/ }).click();
+      await expect(browser.getByLabel("1 source")).toBeVisible();
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(beforeSourceRevision);
+      const original = (await api.getSession(sessionId)).project!;
+      const savedResponse = await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
+        headers: { Authorization: "Bearer editable-pixel-e2e-daemon-token" }
+      });
+      expect(savedResponse.ok()).toBe(true);
+      const saved = (await savedResponse.json()).project;
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByLabel("Open Project file input").setInputFiles({
+        name: "original.pixel-project.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(saved))
+      });
+      await expect(browser.getByRole("navigation", { name: "Project location" })).toContainText(original.name);
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(original.revision);
+      const beforeRejectedFile = await api.getSession(sessionId);
+      const readStored = async () => (await (await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
+        headers: { Authorization: "Bearer editable-pixel-e2e-daemon-token" }
+      })).json()).project;
+      const storedBeforeRejectedFile = await readStored();
+      await browser.getByRole("button", { name: "Project menu" }).click();
+      await browser.getByLabel("Open Project file input").setInputFiles({
+        name: "stale.pixel-project.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(saved))
+      });
+      await expect(browser.getByRole("alert")).toContainText("differs from the saved revision");
+      expect((await api.getSession(sessionId)).project).toEqual(beforeRejectedFile.project);
+      expect((await api.getSession(sessionId)).document).toEqual(beforeRejectedFile.document);
+      expect(await readStored()).toEqual(storedBeforeRejectedFile);
+      await browser.keyboard.press("Escape");
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toBeVisible();
+      if (useMcp) {
+        await callTool(client, "control_web", sessionId, { action: { type: "new_project", name: "Second project" } });
+      } else {
+        await browser.getByRole("button", { name: "Project menu" }).click();
+        await browser.getByRole("button", { name: "New", exact: true }).click();
+      }
+      await expect.poll(async () => (await api.getSession(sessionId)).project?.id).not.toBe(original.id);
+      if (!useMcp) {
+        await browser.getByRole("button", { name: "Project menu" }).click();
+        await browser.getByRole("textbox", { name: "Project name", exact: true }).fill("Second UI project");
+        await browser.getByRole("textbox", { name: "Project name", exact: true }).press("Enter");
+        await browser.keyboard.press("Escape");
+        await expect.poll(async () => (await api.getSession(sessionId)).project?.name).toBe("Second UI project");
+      }
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toHaveCount(0);
+      const second = (await api.getSession(sessionId)).project!;
+      await callTool(client, "set_selection", sessionId, {
+        command: { type: "rect", x: 0, y: 0, width: 1, height: 1, mode: "replace" }
+      });
+      await callTool(client, "use_editable_pixel", sessionId, {
+        reason: "Edit second project only", action: { type: "paint_selection", color_index: 1 }
+      });
+      await expect.poll(async () => (await api.getSession(sessionId)).document.layers[0]!.frames["frame-1"]![0]).toBe(1);
+      const reopen = async (id: string, name: string) => {
+        if (useMcp) await callTool(client, "control_web", sessionId, { action: { type: "open_recent_project", project_id: id } });
+        else {
+          await browser.getByRole("button", { name: "Project menu" }).click();
+          await browser.locator(".recent-project-row > button:first-child").filter({ hasText: name }).click();
+        }
+        await expect.poll(async () => (await api.getSession(sessionId)).project?.id).toBe(id);
+      };
+      await reopen(original.id, original.name);
+      const originalRestored = (await api.getSession(sessionId)).document;
+      expect(originalRestored.layers).toEqual(fixture.layers);
+      expect(originalRestored.palette).toEqual(fixture.palette);
+      expect(originalRestored.canvas).toEqual(fixture.canvas);
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toBeVisible();
+      await reopen(second.id, second.name);
+      const restored = await api.getSession(sessionId);
+      expect(restored.document.layers[0]!.frames["frame-1"]![0]).toBe(1);
+      await expect(browser.locator(".source-name b").filter({ hasText: "original-source.png" })).toHaveCount(0);
+      expect(restored.project!.revision).toBeGreaterThan(second.revision);
+      await expect(browser.getByText("Conflict", { exact: true })).toHaveCount(0);
+    }
+  });
+});
 
 function documentContent(document: PixelDocument): PixelDocument {
   return { ...document, id: "semantic-document", revision: 0, metadata: { ...document.metadata, modifiedBy: "" } };

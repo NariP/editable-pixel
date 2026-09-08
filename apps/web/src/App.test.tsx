@@ -3,7 +3,7 @@ import { createPixelDocument } from "@editable-pixel/document";
 import { createPixelProject, serializePixelProject } from "@editable-pixel/project";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { App, mergeFrameDocuments, resolveCanvasOnionSkin } from "./App.js";
+import { App, appendFrameDocuments, isPristineSpriteImport, mergeFrameDocuments, resolveCanvasOnionSkin } from "./App.js";
 
 beforeAll(() => {
   vi.stubGlobal("PointerEvent", MouseEvent);
@@ -947,5 +947,43 @@ describe("Editable Pixel web editor", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Frames" }));
     expect(screen.getByRole("switch", { name: "Show previous frame" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("switch", { name: "Show next frame" }).getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+
+describe("sprite sheet import boundaries", () => {
+  it("replaces only a pristine blank frame and retains edited or sourced projects", () => {
+    const blank = createPixelProject({ width: 2, height: 2 });
+    expect(isPristineSpriteImport(blank)).toBe(true);
+    blank.document.revision = 1;
+    expect(isPristineSpriteImport(blank)).toBe(false);
+    expect(isPristineSpriteImport(blank, 1)).toBe(true);
+    blank.document.revision = 2;
+    expect(isPristineSpriteImport(blank, 1)).toBe(false);
+    blank.document.revision = 0;
+    blank.revision = 1;
+    expect(isPristineSpriteImport(blank)).toBe(false);
+    blank.revision = 0;
+    blank.document.layers[0]!.frames[blank.document.frames[0]!.id]![0] = 1;
+    expect(isPristineSpriteImport(blank)).toBe(false);
+  });
+
+  it("preserves eight ordered color and transparency frames and existing content when appending", () => {
+    const palette = ["#00000000", ...Array.from({ length: 8 }, (_, index) => `#${(index + 1).toString(16).padStart(2, "0")}80ffff`)];
+    const frames = Array.from({ length: 8 }, (_, index) => createPixelDocument({
+      width: 2, height: 2, palette, pixels: [index + 1, 0, 0, index + 1]
+    }));
+    const ids = frames.map((_, index) => `tile-${index}`);
+    const merged = mergeFrameDocuments(frames, ids);
+    expect(merged.frames.map((frame) => frame.id)).toEqual(ids);
+    expect(merged.palette).toEqual(palette);
+    for (const [index, id] of ids.entries()) {
+      expect(merged.layers[0]!.frames[id]).toEqual([index + 1, 0, 0, index + 1]);
+    }
+    const original = createPixelDocument({ width: 2, height: 2, palette, pixels: [0, 8, 8, 0] });
+    const appended = appendFrameDocuments(original, frames, ids);
+    expect(appended.frames).toHaveLength(9);
+    expect(appended.layers[0]!.frames[original.frames[0]!.id]).toEqual([0, 8, 8, 0]);
+    for (const id of ids) expect(appended.layers[0]!.frames[id]).toEqual(merged.layers[0]!.frames[id]);
   });
 });

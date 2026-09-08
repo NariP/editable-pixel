@@ -1,5 +1,8 @@
 import { NEUTRAL_NORMAL, createPixelDocument, type PixelDocument } from "@editable-pixel/document";
 import { encodePng } from "@editable-pixel/image-codec";
+import { createEditablePixelMcpServer } from "@editable-pixel/mcp";
+import { PixelServerClient } from "@editable-pixel/server/client";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { renderPng } from "@editable-pixel/renderer/node";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { execFile } from "node:child_process";
@@ -11,12 +14,12 @@ import { promisify } from "node:util";
 import { decodeGif } from "../support/gif.js";
 
 const daemonToken = "editable-pixel-e2e-daemon-token";
-test("CLI isometric controls update the visible grid and shared selection history", async ({ page, request }) => {
+test("CLI isometric controls update the visible grid and shared selection history", async ({ page, request, baseURL }) => {
   const created = await createSession(request);
   const directory = await mkdtemp(join(tmpdir(), "editable-pixel-cli-e2e-"));
   const registry = join(directory, "server.json");
   await writeFile(registry, JSON.stringify({
-    pid: process.pid, port: 4178, daemonToken, startedAt: new Date().toISOString()
+    pid: process.pid, port: Number(new URL(baseURL!).port), daemonToken, startedAt: new Date().toISOString()
   }), { mode: 0o600 });
   const cli = async (...args: string[]) => {
     const { stdout } = await promisify(execFile)(process.execPath, [
@@ -1057,6 +1060,160 @@ test("retained-source and sprite-sheet import purposes preserve their distinct o
     const response = await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() });
     return (await response.json() as { document: { frames: unknown[] } }).document.frames.length;
   }).toBe(3);
+});
+
+for (const method of ["UI", "MCP"] as const) test(`${method} New imports eight colored sheet frames without the blank placeholder`, async ({ page, request, baseURL }) => {
+  const response = await request.post("/api/sessions", {
+    headers: authorization(), data: { document: createPixelDocument({ width: 4, height: 4 }), host: "codex" }
+  });
+  const created = await response.json();
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  if (method === "UI") {
+    await page.getByRole("button", { name: "Project menu" }).click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
+  } else {
+    const api = new PixelServerClient({ pid: process.pid, port: Number(new URL(baseURL!).port), daemonToken, startedAt: new Date().toISOString() }, "mcp");
+    const server = createEditablePixelMcpServer(async () => api);
+    const client = new Client({ name: "sprite-import-regression", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name: "control_web", arguments: {
+        session_id: created.session.id, action: { type: "new_project", name: "MCP blank" }
+      } });
+      expect(result.isError).not.toBe(true);
+    } finally {
+      await Promise.all([client.close(), server.close(), clientTransport.close(), serverTransport.close()]);
+    }
+  }
+  const colors = Array.from({ length: 8 }, (_, index) => [32 + index * 24, 64, 192, 255]);
+  const pixels = Array.from({ length: 8 * 4 }, (_, index) => {
+    const x = index % 8, y = Math.floor(index / 8);
+    return x % 2 === y % 2 ? colors[Math.floor(y / 2) * 4 + Math.floor(x / 2)]! : [0, 0, 0, 0];
+  });
+  const png = Buffer.from(await encodePng({ width: 8, height: 4, data: new Uint8ClampedArray(pixels.flat()) }));
+  await page.getByRole("button", { name: /Tight 100%/ }).click();
+  await page.locator('input[type="file"]').setInputFiles({ name: "eight-colors.png", mimeType: "image/png", buffer: png });
+  await page.getByRole("button", { name: /Import Sprite Sheet/ }).click();
+  await page.getByLabel("Sprite sheet columns").fill("4");
+  await page.getByLabel("Sprite sheet rows").fill("2");
+  await page.getByLabel("Sprite sheet rows").press("Tab");
+  await page.getByRole("button", { name: "Import 8 frames" }).click();
+  await expect(page.getByLabel("8 frames")).toBeVisible({ timeout: 20_000 });
+  await expect.poll(async () => {
+    const state = await (await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() })).json();
+    const document = state.document as PixelDocument;
+    return document.frames.map((frame) => [...new Set(document.layers[0]!.frames[frame.id]!.map((index) => document.palette[index]))].sort());
+  }).toEqual(colors.map((color) => ["#00000000", `#${color.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`].sort()));
+});
+
+test("a delayed sprite import keeps a concurrent edit and reports the stale import", async ({ page, request }) => {
+  const response = await request.post("/api/sessions", {
+    headers: authorization(), data: { document: createPixelDocument({ width: 4, height: 4 }), host: "codex" }
+  });
+  const created = await response.json();
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  let resume!: () => void;
+  let entered!: () => void;
+  const conversionEntered = new Promise<void>((resolve) => { entered = resolve; });
+  const releaseConversion = new Promise<void>((resolve) => { resume = resolve; });
+  await page.route("**/api/convert?**", async (route) => {
+    const converted = await route.fetch();
+    entered();
+    await releaseConversion;
+    await route.fulfill({ response: converted });
+  });
+  const png = Buffer.from(await encodePng({ width: 2, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255]) }));
+  await page.locator('input[type="file"]').setInputFiles({ name: "delayed-sheet.png", mimeType: "image/png", buffer: png });
+  await page.getByRole("button", { name: /Import Sprite Sheet/ }).click();
+  await page.getByLabel("Sprite sheet columns").fill("2");
+  await page.getByLabel("Sprite sheet rows").fill("1");
+  await page.getByLabel("Sprite sheet rows").press("Tab");
+  await page.getByRole("button", { name: "Import 2 frames" }).click();
+  await conversionEntered;
+  let finishSave!: () => void;
+  let saveStarted!: () => void;
+  const saveEntered = new Promise<void>((resolve) => { saveStarted = resolve; });
+  const releaseSave = new Promise<void>((resolve) => { finishSave = resolve; });
+  await page.route(`**/api/sessions/${created.session.id}/project`, async (route) => {
+    saveStarted();
+    await releaseSave;
+    await route.continue();
+  });
+  try {
+    const selected = await request.post(`/api/sessions/${created.session.id}/selection-command`, {
+      headers: authorization("mcp"), data: { command: { type: "rect", x: 0, y: 0, width: 1, height: 1, mode: "replace" } }
+    });
+    expect(selected.ok()).toBe(true);
+    const edited = await request.post(`/api/sessions/${created.session.id}/actions`, {
+      headers: authorization("mcp"), data: { reason: "Concurrent edit", action: { type: "paint_selection", colorIndex: 1 } }
+    });
+    expect(edited.ok()).toBe(true);
+    const editedState = await edited.json();
+    await expect(page.getByText(`Session synced at revision ${editedState.revision}.`, { exact: true })).toBeVisible();
+    await saveEntered;
+  } finally {
+    resume();
+  }
+  const staleImportNotice = page.getByText("The project changed while the sprite sheet was importing. Your edits were kept. Import the sheet again.");
+  const saveAcknowledged = page.waitForResponse((response) => response.url().endsWith(`/api/sessions/${created.session.id}/project`) && response.request().method() === "PUT");
+  try {
+    await expect(staleImportNotice).toBeVisible();
+  } finally {
+    finishSave();
+  }
+  expect((await saveAcknowledged).ok()).toBe(true);
+  await page.getByRole("button", { name: "Session details" }).click();
+  await expect(page.locator(".session-popover").getByText("Saved", { exact: true })).toBeVisible();
+  await expect(staleImportNotice).toBeVisible();
+  const state = await (await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() })).json();
+  expect(state.document.frames).toHaveLength(1);
+  expect(state.document.layers[0].frames["frame-1"][0]).toBe(1);
+  await expect(page.locator(".source-name b").filter({ hasText: "delayed-sheet.png" })).toHaveCount(0);
+});
+
+test("a real project PUT conflict stays visible and preserves the external stored project", async ({ page, request }) => {
+  const created = await createSession(request);
+  await page.goto(`/?session=${created.session.id}&bootstrap=${created.bootstrapToken}`);
+  await expect(page.locator(".status-connected")).toBeVisible();
+  const readSession = async () => (await (await request.get(`/api/sessions/${created.session.id}`, { headers: authorization() })).json());
+  await expect.poll(async () => (await readSession()).project?.id).toBeTruthy();
+  const projectId = (await readSession()).project.id;
+  const readStored = async () => (await (await request.get(`/api/sessions/${created.session.id}/projects/${projectId}`, { headers: authorization() })).json()).project;
+  const original = await readStored();
+  let resume!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>((resolve) => { entered = resolve; });
+  const release = new Promise<void>((resolve) => { resume = resolve; });
+  await page.route(`**/api/sessions/${created.session.id}/project`, async (route) => {
+    entered();
+    await release;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Pen", exact: true }).click();
+  const box = await page.getByLabel("Pixel canvas").boundingBox();
+  if (!box) throw new Error("Pixel canvas is not visible");
+  await page.mouse.click(box.x + box.width / 16, box.y + box.height / 12);
+  await pending;
+  const external = { ...structuredClone(original), revision: original.revision + 1, name: "External saved content" };
+  const externalSessionResponse = await request.post("/api/sessions", {
+    headers: authorization(), data: { document: original.document, host: "codex" }
+  });
+  expect(externalSessionResponse.ok()).toBe(true);
+  const externalSession = await externalSessionResponse.json();
+  try {
+    const externalSave = await request.put(`/api/sessions/${externalSession.session.id}/project`, {
+      headers: authorization(), data: { project: external, expectedRevision: original.revision }
+    });
+    expect(externalSave.ok()).toBe(true);
+  } finally {
+    resume();
+  }
+  await page.getByRole("button", { name: "Session details" }).click();
+  await expect(page.getByText("Conflict", { exact: true })).toBeVisible();
+  expect(await readStored()).toEqual(external);
 });
 
 test("multiple images import in natural filename order and export matching GIF pixels and timing", async ({ page, request }) => {

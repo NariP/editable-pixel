@@ -185,6 +185,7 @@ export class ProjectUnavailableError extends Error {
 export class ProjectAutosaveQueue {
   #state: ProjectSaveState;
   #pending?: PixelProject;
+  #inFlightRevision?: number;
   #drainPromise?: Promise<void>;
   #listeners = new Set<(state: ProjectSaveState) => void>();
 
@@ -209,18 +210,21 @@ export class ProjectAutosaveQueue {
     assertPixelProject(project);
     const newestRevision = Math.max(
       this.#state.savedRevision,
-      this.#pending?.revision ?? this.#state.savedRevision
+      this.#pending?.revision ?? this.#state.savedRevision,
+      this.#inFlightRevision ?? this.#state.savedRevision
     );
-    if (project.revision <= newestRevision) {
+    if (project.revision === newestRevision) return;
+    if (project.revision < newestRevision) {
       throw new Error(`Autosave revisions must increase. Received ${project.revision} after ${newestRevision}.`);
     }
     this.#pending = structuredClone(project);
     this.update({
-      status: "unsaved",
+      status: this.#state.status === "conflict" ? "conflict" : "unsaved",
+      ...(this.#state.error ? { error: this.#state.error } : {}),
       savedRevision: this.#state.savedRevision,
       pendingRevision: project.revision
     });
-    this.start();
+    if (this.#state.status !== "conflict") this.start();
   }
 
   retry(): void {
@@ -244,6 +248,7 @@ export class ProjectAutosaveQueue {
     while (this.#pending) {
       const candidate = this.#pending;
       this.#pending = undefined;
+      this.#inFlightRevision = candidate.revision;
       this.update({
         status: "saving",
         savedRevision: this.#state.savedRevision,
@@ -272,6 +277,8 @@ export class ProjectAutosaveQueue {
           error: error instanceof Error ? error.message : String(error)
         });
         return;
+      } finally {
+        this.#inFlightRevision = undefined;
       }
     }
   }
