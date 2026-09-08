@@ -173,7 +173,7 @@ function parityDocument(): PixelDocument {
 }
 
 test("UI and MCP reopen independent projects without reload or save conflicts", async ({ page, context, baseURL }) => {
-  await withParitySessions(page, context, baseURL, async ({ api, client, webId, mcpId, mcpPage, fixture }) => {
+  await withParitySessions(page, context, baseURL, async ({ api, client, webId, mcpId, mcpPage, fixture, sessionHeaders }) => {
     for (const [browser, sessionId, useMcp] of [[page, webId, false], [mcpPage, mcpId, true]] as const) {
       await expect.poll(async () => (await api.getSession(sessionId)).project?.id).toBeTruthy();
       await browser.getByRole("button", { name: "Project menu" }).click();
@@ -189,7 +189,7 @@ test("UI and MCP reopen independent projects without reload or save conflicts", 
       await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(beforeSourceRevision);
       const original = (await api.getSession(sessionId)).project!;
       const savedResponse = await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
-        headers: { Authorization: "Bearer editable-pixel-e2e-daemon-token" }
+        headers: sessionHeaders(sessionId)
       });
       expect(savedResponse.ok()).toBe(true);
       const saved = (await savedResponse.json()).project;
@@ -199,10 +199,15 @@ test("UI and MCP reopen independent projects without reload or save conflicts", 
       });
       await expect(browser.getByRole("navigation", { name: "Project location" })).toContainText(original.name);
       await expect.poll(async () => (await api.getSession(sessionId)).project?.revision).toBeGreaterThan(original.revision);
-      const beforeRejectedFile = await api.getSession(sessionId);
+      const reopened = await api.getSession(sessionId);
       const readStored = async () => (await (await browser.request.get(`/api/sessions/${sessionId}/projects/${original.id}`, {
-        headers: { Authorization: "Bearer editable-pixel-e2e-daemon-token" }
+        headers: sessionHeaders(sessionId)
       })).json()).project;
+      await expect.poll(async () => {
+        const stored = await readStored();
+        return { revision: stored.revision, document: stored.document };
+      }).toEqual({ revision: reopened.project!.revision, document: reopened.document });
+      const beforeRejectedFile = await api.getSession(sessionId);
       const storedBeforeRejectedFile = await readStored();
       await browser.getByRole("button", { name: "Project menu" }).click();
       await browser.getByLabel("Open Project file input").setInputFiles({
@@ -280,27 +285,44 @@ async function withParitySessions(
   page: Page,
   context: BrowserContext,
   baseURL: string | undefined,
-  run: (harness: { api: PixelServerClient; client: Client; webId: string; mcpId: string; mcpPage: Page; fixture: PixelDocument }) => Promise<void>
+  run: (harness: { api: Pick<PixelServerClient, "getSession" | "getHistory">; client: Client; webId: string; mcpId: string; mcpPage: Page; fixture: PixelDocument; sessionHeaders: (id: string) => Record<string, string> }) => Promise<void>
 ): Promise<void> {
   if (!baseURL) throw new Error("The E2E server baseURL is required.");
-  const api = new PixelServerClient({
+  const registry = {
     pid: process.pid,
     port: Number(new URL(baseURL).port),
     daemonToken: "editable-pixel-e2e-daemon-token",
     startedAt: new Date().toISOString()
-  }, "mcp");
-  const server = createEditablePixelMcpServer(async () => api);
+  };
+  const daemonApi = new PixelServerClient(registry, "mcp");
+  const sessionAccess = new Map<string, { api: PixelServerClient; token: string }>();
+  const access = (id: string) => {
+    const session = sessionAccess.get(id);
+    if (!session) throw new Error("The requested parity session has not been created.");
+    return session;
+  };
+  const api: Pick<PixelServerClient, "getSession" | "getHistory"> = {
+    getSession: (id) => access(id).api.getSession(id),
+    getHistory: (id) => access(id).api.getHistory(id)
+  };
+  const sessionHeaders = (id: string) => ({ Authorization: `Bearer ${access(id).token}` });
+  const createSession = async (document: PixelDocument) => {
+    const created = await daemonApi.createSession({ document, host: "browser" });
+    sessionAccess.set(created.session.id, {
+      api: new PixelServerClient({ ...registry, daemonToken: created.persistentToken }, "mcp"),
+      token: created.persistentToken
+    });
+    return created;
+  };
+  const server = createEditablePixelMcpServer(async () => daemonApi);
   const client = new Client({ name: "editable-pixel-e2e-parity", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const sessionIds: string[] = [];
   let mcpPage: Page | undefined;
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const fixture = parityDocument();
-    const webSession = await api.createSession({ document: structuredClone(fixture), host: "browser" });
-    sessionIds.push(webSession.session.id);
-    const mcpSession = await api.createSession({ document: structuredClone(fixture), host: "browser" });
-    sessionIds.push(mcpSession.session.id);
+    const webSession = await createSession(structuredClone(fixture));
+    const mcpSession = await createSession(structuredClone(fixture));
     mcpPage = await context.newPage();
     await page.goto(`/?session=${webSession.session.id}&bootstrap=${webSession.bootstrapToken}`);
     await mcpPage.goto(`/?session=${mcpSession.session.id}&bootstrap=${mcpSession.bootstrapToken}`);
@@ -308,11 +330,11 @@ async function withParitySessions(
       await expect(browser.locator(".status-connected")).toBeVisible();
       await expect(browser.getByLabel("Pixel canvas")).toBeVisible();
     }
-    await run({ api, client, webId: webSession.session.id, mcpId: mcpSession.session.id, mcpPage, fixture });
+    await run({ api, client, webId: webSession.session.id, mcpId: mcpSession.session.id, mcpPage, fixture, sessionHeaders });
   } finally {
     await Promise.all([
       mcpPage?.close(),
-      ...sessionIds.map((id) => api.closeSession(id)),
+      ...[...sessionAccess].map(([id, session]) => session.api.closeSession(id)),
       client.close(),
       server.close(),
       clientTransport.close(),
