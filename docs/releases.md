@@ -28,6 +28,16 @@ The workflow uses the Git tag as the release trigger but validates that the tag 
 
 ## Compatibility policy
 
+### 2.0.0
+
+- **Breaking MCP response change:** mutation, selection, Undo/Redo, and preview responses no longer include full document/session snapshots. Both text and structured content return compact revision/target/result summaries. Consumers needing document details must use focused reads such as `get_metadata`, `get_palette_context`, or `get_design_context`. HTTP session and browser WebSocket snapshots remain full. See [the MCP migration contract](./mcp.md#response-compatibility).
+- Adds `remap_colors` for one-call recoloring from frozen original pixels and `operations` for ordered partial-success batches. Valid items apply together; failures and skipped dependencies return identifiers and reasons. One Undo restores the successful subset. New batch/remap calls require `base_revision`; existing single-action inputs remain supported.
+- Fixes duplicate stdio server startup in the installed MCP executable. One tool call now sends one mutation request instead of potentially applying twice or returning a conflict after applying. Workspace developers should use `packages/pixel-mcp/dist/stdio.js` for direct execution; `dist/index.js` is a library export.
+- Fixes sprite-sheet import palette/blank-frame handling, concurrent import/save protection, project reopen revision handling, and import error notices. Uses system fonts without a remote font request.
+- Recomputes content bounds after remapping transparent/opaque colors so later content resizing preserves the edited pixels.
+- Requires **Node.js 24 or newer** and remains compatible with **Pixel Document version `1`**. Windows x64 npm support is unchanged.
+- Update explicitly with `npm install --global editable-pixel@2.0.0` (`npm.cmd` on Windows), then rerun `editable-pixel install-skill --host codex`, `--host claude`, or `--host both` for the hosts you use. Save open work, stop the old local server, and restart/reconnect the host so its MCP process and bundled skill use the new version.
+
 ### 1.0.4
 
 - **Requires Node.js 24 or newer.** Node 20 reached end of life in April 2026, and the previous `>=20.9.0` floor was already unmet in practice: `commander@15`, a dependency, requires `>=22.12.0`. Installing on Node 20 or 22 now fails with `EBADENGINE`, and `install.sh` refuses rather than proceeding.
